@@ -57,8 +57,22 @@ def build_orchestrator(
 def main(ctx: click.Context) -> None:
     """reconfox — recon toolkit for authorized security testing."""
     if ctx.invoked_subcommand is None:
-        console.print("[yellow]TUI mode will land in Этап 9.[/yellow]")
-        console.print("Run [bold]reconfox scan <url>[/bold] for CLI mode.")
+        from reconfox.tui import run_tui
+
+        def factory(
+            wordlist: Path,
+            use_metasploit: bool,
+            on_progress: object | None = None,
+        ) -> Orchestrator:
+            return build_orchestrator(
+                wordlist=wordlist,
+                nmap_binary="nmap",
+                ffuf_binary="ffuf",
+                use_metasploit=use_metasploit,
+                on_progress=on_progress,
+            )
+
+        run_tui(orchestrator_factory=factory)
 
 
 @main.command()
