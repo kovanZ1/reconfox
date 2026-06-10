@@ -22,10 +22,11 @@ from reconfox.models import (
     ScanResult,
     ScanStatus,
     Target,
+    Vulnerability,
     WebFinding,
 )
 
-Phase = Literal["resolve", "nmap", "ffuf"]
+Phase = Literal["resolve", "nmap", "ffuf", "exploits"]
 Status = Literal["started", "completed", "failed"]
 
 
@@ -58,6 +59,10 @@ class FfufProtocol(Protocol):
     ) -> list[WebFinding]: ...
 
 
+class ExploitFinderProtocol(Protocol):
+    async def find_for_ports(self, ports: list[PortInfo]) -> list[Vulnerability]: ...
+
+
 ProgressCallback = Callable[[ProgressEvent], None]
 
 
@@ -68,11 +73,13 @@ class Orchestrator:
         nmap_scanner: NmapProtocol,
         ffuf_scanner: FfufProtocol,
         wordlist: Path,
+        exploit_finder: ExploitFinderProtocol | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> None:
         self.resolver = resolver
         self.nmap = nmap_scanner
         self.ffuf = ffuf_scanner
+        self.exploit_finder = exploit_finder
         self.wordlist = wordlist
         self._on_progress = on_progress
 
@@ -126,6 +133,8 @@ class Orchestrator:
         )
         result.ports = ports
         result.web_findings = findings
+        if self.exploit_finder is not None and ports:
+            result.vulnerabilities = await self._do_exploits(ports, result)
         result.finished_at = datetime.now(UTC)
         result.status = self._derive_status(result)
         return result
@@ -170,6 +179,31 @@ class Orchestrator:
             "nmap", "completed", duration=(datetime.now(UTC) - start).total_seconds()
         )
         return ports
+
+    async def _do_exploits(
+        self, ports: list[PortInfo], result: ScanResult
+    ) -> list[Vulnerability]:
+        if self.exploit_finder is None:  # guarded by caller, narrow type for mypy
+            return []
+        self._emit("exploits", "started")
+        start = datetime.now(UTC)
+        try:
+            vulns = await self.exploit_finder.find_for_ports(ports)
+        except Exception as exc:  # noqa: BLE001 — third-party tool may raise anything
+            self._emit(
+                "exploits",
+                "failed",
+                str(exc),
+                (datetime.now(UTC) - start).total_seconds(),
+            )
+            result.errors.append(f"exploits: {exc}")
+            return []
+        self._emit(
+            "exploits",
+            "completed",
+            duration=(datetime.now(UTC) - start).total_seconds(),
+        )
+        return vulns
 
     async def _do_ffuf(self, target: Target, result: ScanResult) -> list[WebFinding]:
         self._emit("ffuf", "started")

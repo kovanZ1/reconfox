@@ -16,6 +16,7 @@ import click
 from rich.console import Console
 
 from reconfox import __version__
+from reconfox.core.exploit_finder import ExploitFinder
 from reconfox.core.ffuf_scanner import FfufScanner
 from reconfox.core.nmap_scanner import NmapScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent
@@ -39,6 +40,7 @@ def build_orchestrator(
         resolver=Resolver(),
         nmap_scanner=NmapScanner(binary=nmap_binary),
         ffuf_scanner=FfufScanner(binary=ffuf_binary),
+        exploit_finder=ExploitFinder(),
         wordlist=wordlist,
         on_progress=on_progress,  # type: ignore[arg-type]
     )
