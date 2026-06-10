@@ -18,6 +18,7 @@ from rich.console import Console
 from reconfox import __version__
 from reconfox.core.exploit_finder import ExploitFinder
 from reconfox.core.ffuf_scanner import FfufScanner
+from reconfox.core.metasploit_finder import MetasploitFinder
 from reconfox.core.nmap_scanner import NmapScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent
 from reconfox.core.resolver import Resolver
@@ -33,14 +34,18 @@ def build_orchestrator(
     wordlist: Path,
     nmap_binary: str,
     ffuf_binary: str,
+    use_metasploit: bool = False,
     on_progress: object | None = None,
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
+    finder: ExploitFinder | MetasploitFinder = (
+        MetasploitFinder() if use_metasploit else ExploitFinder()
+    )
     return Orchestrator(
         resolver=Resolver(),
         nmap_scanner=NmapScanner(binary=nmap_binary),
         ffuf_scanner=FfufScanner(binary=ffuf_binary),
-        exploit_finder=ExploitFinder(),
+        exploit_finder=finder,
         wordlist=wordlist,
         on_progress=on_progress,  # type: ignore[arg-type]
     )
@@ -92,6 +97,11 @@ def main(ctx: click.Context) -> None:
 )
 @click.option("--nmap-binary", default="nmap", show_default=True, help="Path to nmap.")
 @click.option("--ffuf-binary", default="ffuf", show_default=True, help="Path to ffuf.")
+@click.option(
+    "--metasploit",
+    is_flag=True,
+    help="Use Metasploit RPC (msfrpcd) for exploit search instead of searchsploit.",
+)
 @click.option("--no-tui", is_flag=True, help="Headless mode (no TUI). Used by tests/CI.")
 def scan(
     url: str,
@@ -101,6 +111,7 @@ def scan(
     wordlist: Path,
     nmap_binary: str,
     ffuf_binary: str,
+    metasploit: bool,
     no_tui: bool,  # noqa: ARG001 — reserved for Этап 9
 ) -> None:
     """Run reconnaissance against a target URL."""
@@ -111,6 +122,7 @@ def scan(
         wordlist=wordlist,
         nmap_binary=nmap_binary,
         ffuf_binary=ffuf_binary,
+        use_metasploit=metasploit,
         on_progress=_print_progress,
     )
 
@@ -138,7 +150,9 @@ def _resolve_formats(raw: str) -> list[ReportFormat]:
 
 
 def _print_progress(event: ProgressEvent) -> None:
-    color = {"started": "yellow", "completed": "green", "failed": "red"}[event.status]
+    color: dict[str, str] = {"started": "yellow", "completed": "green", "failed": "red"}[
+        event.status
+    ]  # type: ignore[assignment]
     msg = event.message or ""
     extra = f" — {msg}" if msg else ""
     console.print(f"  [{color}]{event.phase}: {event.status}[/{color}]{extra}")
