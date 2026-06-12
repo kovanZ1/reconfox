@@ -75,33 +75,40 @@
 
 ## Установка
 
-### Требования
-- Python 3.11+
-- Kali Linux или другой Linux с предустановленными `nmap` и `ffuf`
-- Опционально: `metasploit-framework` с запущенным `msfrpcd`
-
-### Установка из исходников
+### Быстрая установка (один скрипт)
 
 ```bash
 git clone https://github.com/kovanZ1/reconfox.git
 cd reconfox
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./install.sh
 ```
 
-С опциональной поддержкой Metasploit RPC:
+Скрипт создаст изолированный venv в `~/.local/share/reconfox/.venv`, поставит пакет
+и сделает симлинк `/usr/local/bin/reconfox` — после этого команда работает из любой
+папки, как nmap.
+
+Опции:
+```bash
+./install.sh --prefix /opt/reconfox     # кастомный путь
+./install.sh --no-link                  # без симлинка в PATH
+./install.sh --uninstall                # снести всё
+```
+
+### Ручная установка (для разработчиков)
 
 ```bash
-pip install -e ".[msf]"
+git clone https://github.com/kovanZ1/reconfox.git
+cd reconfox
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,msf]"
 ```
 
-### Установка инструментов в Kali
+### Системные зависимости (Kali / Debian)
 
 ```bash
 sudo apt update
-sudo apt install nmap ffuf seclists exploitdb
-# для Metasploit интеграции:
+sudo apt install nmap ffuf exploitdb seclists
+# опционально для --metasploit:
 sudo apt install metasploit-framework
 ```
 
@@ -124,19 +131,23 @@ reconfox
 ### Headless CLI
 
 ```bash
-# Быстрый скан с MD отчётом
-reconfox scan https://example.com -o ./reports --no-tui
+# Быстрый скан с MD отчётом в дефолтной папке
+reconfox scan https://example.com --no-tui
 
-# Полный скан с HTML отчётом
-reconfox scan https://example.com -m full -f html -o ./reports --no-tui
+# Точное имя файла (формат определяется по расширению)
+reconfox scan https://example.com -O ./scan.html --no-tui
+reconfox scan https://example.com -O ./scan.json --no-tui
 
-# Stealth + оба формата + Metasploit
-reconfox scan https://example.com -m stealth -f both --metasploit --no-tui
+# Полный скан + verbose-лог + все три формата сразу
+reconfox scan https://example.com -m full -f all -v --no-tui
+
+# Stealth + Metasploit RPC
+reconfox scan https://target.local -m stealth --metasploit --no-tui
 
 # Кастомный wordlist
 reconfox scan https://target.local \
     --wordlist /usr/share/seclists/Discovery/Web-Content/big.txt \
-    -o ./reports --no-tui
+    -O /tmp/report.md --no-tui
 ```
 
 ### Все опции
@@ -144,15 +155,34 @@ reconfox scan https://target.local \
 ```
 reconfox scan <URL> [OPTIONS]
 
-  -m, --mode [quick|full|stealth]   Профиль скана (по умолчанию: quick)
-  -o, --output PATH                 Папка для отчёта (по умолчанию: ./reports)
-  -f, --format [md|html|both]       Формат отчёта (по умолчанию: md)
+  -m, --mode [quick|full|stealth]   Профиль скана (default: quick)
+  -o, --output PATH                 Папка для отчёта (default: ./reports)
+  -O, --output-file PATH            Полный путь к файлу отчёта.
+                                    Формат определяется по расширению
+                                    (.md / .html / .json).
+  -f, --format [md|html|json|all]   Формат(ы) отчёта (default: md)
       --wordlist PATH               Wordlist для ffuf
       --nmap-binary PATH            Путь к nmap
       --ffuf-binary PATH            Путь к ffuf
       --metasploit                  Использовать msfrpcd вместо searchsploit
+  -v, --verbose                     Показывать каждый шаг с детальным выводом
       --no-tui                      Headless режим
 ```
+
+### Хакерский TUI
+
+Запустится без аргументов:
+```bash
+reconfox
+```
+
+Что есть:
+- ASCII лого + matrix-green/amber тема
+- Прогресс-бары для каждой фазы (resolve / nmap / ffuf / exploits)
+- Live-лог с префиксами `[+]` `[*]` `[-]`
+- Таблица открытых портов в реальном времени
+- Поля для URL, output-файла, выбора режима и формата
+- Биндинги: `Ctrl+R` запуск, `Ctrl+L` очистить лог, `Ctrl+C` выход
 
 ### Режимы сканирования
 

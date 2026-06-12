@@ -26,8 +26,8 @@ from reconfox.models import (
     WebFinding,
 )
 
-Phase = Literal["resolve", "nmap", "ffuf", "exploits"]
-Status = Literal["started", "completed", "failed"]
+Phase = Literal["resolve", "nmap", "ffuf", "exploits", "report"]
+Status = Literal["started", "info", "completed", "failed"]
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,7 @@ class Orchestrator:
         return result
 
     async def _do_resolve(self, target: Target, result: ScanResult) -> bool:
-        self._emit("resolve", "started")
+        self._emit("resolve", "started", f"resolving {target.hostname}")
         start = datetime.now(UTC)
         try:
             await self.resolver.resolve(target)
@@ -153,6 +153,13 @@ class Orchestrator:
             )
             result.errors.append(f"resolve: {exc}")
             return False
+        self._emit("resolve", "info", f"ip: {target.ip}")
+        if target.asn is not None and target.asn.asn:
+            asn_str = f"AS{target.asn.asn} {target.asn.asn_name or ''}".strip()
+            self._emit("resolve", "info", f"asn: {asn_str}")
+        if target.geo is not None and (target.geo.city or target.geo.country):
+            loc = ", ".join(filter(None, [target.geo.city, target.geo.country]))
+            self._emit("resolve", "info", f"location: {loc}")
         self._emit(
             "resolve",
             "completed",
@@ -165,7 +172,7 @@ class Orchestrator:
     ) -> list[PortInfo]:
         if target.ip is None:
             return []
-        self._emit("nmap", "started")
+        self._emit("nmap", "started", f"scanning {target.ip} (mode={mode.value})")
         start = datetime.now(UTC)
         try:
             ports = await self.nmap.scan(target.ip, mode)
@@ -175,8 +182,17 @@ class Orchestrator:
             )
             result.errors.append(f"nmap: {exc}")
             return []
+        open_ports = [p for p in ports if p.state == "open"]
+        for p in sorted(open_ports, key=lambda x: x.port):
+            svc = p.service or "?"
+            ver = f"{p.product or ''} {p.version or ''}".strip()
+            tail = f" {ver}" if ver else ""
+            self._emit("nmap", "info", f"{p.port}/{p.protocol} open {svc}{tail}")
         self._emit(
-            "nmap", "completed", duration=(datetime.now(UTC) - start).total_seconds()
+            "nmap",
+            "completed",
+            f"{len(open_ports)} open port(s)",
+            (datetime.now(UTC) - start).total_seconds(),
         )
         return ports
 
@@ -185,7 +201,12 @@ class Orchestrator:
     ) -> list[Vulnerability]:
         if self.exploit_finder is None:  # guarded by caller, narrow type for mypy
             return []
-        self._emit("exploits", "started")
+        relevant = [p for p in ports if p.product]
+        self._emit(
+            "exploits",
+            "started",
+            f"querying for {len(relevant)} service(s)",
+        )
         start = datetime.now(UTC)
         try:
             vulns = await self.exploit_finder.find_for_ports(ports)
@@ -198,15 +219,23 @@ class Orchestrator:
             )
             result.errors.append(f"exploits: {exc}")
             return []
+        for v in vulns[:10]:
+            label = f"[{v.severity.value}] {v.title}"
+            if v.cve:
+                label += f" ({v.cve})"
+            self._emit("exploits", "info", label)
+        if len(vulns) > 10:
+            self._emit("exploits", "info", f"... and {len(vulns) - 10} more")
         self._emit(
             "exploits",
             "completed",
-            duration=(datetime.now(UTC) - start).total_seconds(),
+            f"{len(vulns)} potential vuln(s)",
+            (datetime.now(UTC) - start).total_seconds(),
         )
         return vulns
 
     async def _do_ffuf(self, target: Target, result: ScanResult) -> list[WebFinding]:
-        self._emit("ffuf", "started")
+        self._emit("ffuf", "started", f"fuzzing {target.url} with {self.wordlist.name}")
         start = datetime.now(UTC)
         try:
             findings = await self.ffuf.fuzz(target.url, self.wordlist)
@@ -216,8 +245,15 @@ class Orchestrator:
             )
             result.errors.append(f"ffuf: {exc}")
             return []
+        for f in findings[:20]:
+            self._emit("ffuf", "info", f"{f.status} {f.url}")
+        if len(findings) > 20:
+            self._emit("ffuf", "info", f"... and {len(findings) - 20} more")
         self._emit(
-            "ffuf", "completed", duration=(datetime.now(UTC) - start).total_seconds()
+            "ffuf",
+            "completed",
+            f"{len(findings)} finding(s)",
+            (datetime.now(UTC) - start).total_seconds(),
         )
         return findings
 

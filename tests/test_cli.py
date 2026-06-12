@@ -59,7 +59,7 @@ class TestCliRoot:
         runner = CliRunner()
         result = runner.invoke(cli.main, ["--version"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "0.2.0" in result.output
 
 
 class TestScanCommand:
@@ -109,15 +109,56 @@ class TestScanCommand:
         assert list(tmp_path.glob("*.html"))
         assert not list(tmp_path.glob("*.md"))
 
-    def test_format_both(self, tmp_path: Path) -> None:
+    def test_format_all(self, tmp_path: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(
             cli.main,
-            ["scan", "https://example.com", "-o", str(tmp_path), "-f", "both", "--no-tui"],
+            ["scan", "https://example.com", "-o", str(tmp_path), "-f", "all", "--no-tui"],
         )
         assert result.exit_code == 0
         assert list(tmp_path.glob("*.html"))
         assert list(tmp_path.glob("*.md"))
+        assert list(tmp_path.glob("*.json"))
+
+    def test_format_json(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "-f", "json", "--no-tui"],
+        )
+        assert result.exit_code == 0
+        assert list(tmp_path.glob("*.json"))
+        assert not list(tmp_path.glob("*.md"))
+
+    def test_output_file_explicit_path(self, tmp_path: Path) -> None:
+        target = tmp_path / "custom_report.html"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-O", str(target), "--no-tui"],
+        )
+        assert result.exit_code == 0, result.output
+        assert target.exists()
+        assert target.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+        # No auto-generated reports
+        assert list(tmp_path.glob("reconfox_*.md")) == []
+
+    def test_output_file_with_unknown_extension_fails(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-O", str(tmp_path / "x.xyz"), "--no-tui"],
+        )
+        assert result.exit_code == 2
+        assert "extension" in result.output.lower() or "unknown" in result.output.lower()
+
+    def test_verbose_flag_accepted(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "-v", "--no-tui"],
+        )
+        assert result.exit_code == 0
 
     def test_invalid_mode_rejected(self, tmp_path: Path) -> None:
         runner = CliRunner()

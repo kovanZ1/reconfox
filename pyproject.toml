@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reconfox"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI/TUI reconnaissance toolkit: IP/ASN/geo resolution, async nmap, ffuf directory fuzzing, exploit lookup. For authorized security testing only."
 readme = "README.md"
 requires-python = ">=3.11"

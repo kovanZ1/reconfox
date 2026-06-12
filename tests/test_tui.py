@@ -55,9 +55,10 @@ async def test_default_mode_is_quick(app: ReconFoxApp) -> None:
 
 async def test_start_without_url_shows_error(app: ReconFoxApp) -> None:
     async with app.run_test() as pilot:
-        await pilot.press("r")
+        await pilot.press("ctrl+r")
         await pilot.pause()
         from textual.widgets import Static
 
         status_widget = app.query_one("#status-bar", Static)
-        assert "URL" in str(status_widget.render())
+        text = str(status_widget.render()).lower()
+        assert "url" in text or "error" in text

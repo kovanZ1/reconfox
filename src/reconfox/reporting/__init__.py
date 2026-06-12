@@ -1,7 +1,23 @@
-"""Report generation — Markdown and HTML."""
+"""Report generation — Markdown / HTML / JSON."""
 
 from reconfox.reporting.html import render_html
+from reconfox.reporting.json_report import render_json
 from reconfox.reporting.markdown import render_markdown
-from reconfox.reporting.writer import ReportFormat, write_report
+from reconfox.reporting.writer import (
+    ReportFormat,
+    default_filename,
+    render,
+    write_report,
+    write_report_to_file,
+)
 
-__all__ = ["ReportFormat", "render_html", "render_markdown", "write_report"]
+__all__ = [
+    "ReportFormat",
+    "default_filename",
+    "render",
+    "render_html",
+    "render_json",
+    "render_markdown",
+    "write_report",
+    "write_report_to_file",
+]
