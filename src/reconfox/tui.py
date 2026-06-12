@@ -28,8 +28,7 @@ from textual.widgets import (
     Label,
     Log,
     ProgressBar,
-    RadioButton,
-    RadioSet,
+    Select,
     Static,
 )
 
@@ -63,72 +62,62 @@ class ReconFoxApp(App[None]):
         background: #0b0d0e;
     }
     #banner {
-        height: 5;
-        padding: 1 2 0 2;
+        height: 4;
+        padding: 0 2;
     }
-    #target-row {
+    .row {
         height: 3;
         margin: 0 2;
     }
-    #target-row Label {
-        width: 8;
+    .row Label {
+        width: 9;
         color: #00ff5f;
         padding: 1 0 0 0;
+        content-align: left middle;
     }
-    #target-row Input {
+    .row Input {
         width: 1fr;
         background: #14181a;
         color: #d7ffd7;
+        border: tall #1a1f22;
     }
-    #target-row Input:focus {
+    .row Input:focus {
         border: tall #00ff5f;
     }
-    #options-row {
-        height: auto;
-        padding: 1 2;
-    }
-    #options-row .col {
-        width: 1fr;
-        padding: 0 1 0 0;
-    }
-    #options-row .col Label {
-        color: #ffb000;
-        text-style: bold;
-        padding: 0 0 1 0;
-    }
-    Checkbox, RadioButton {
-        color: #d7ffd7;
-        background: transparent;
-    }
-    Checkbox > .toggle--button, RadioButton > .toggle--button {
-        color: #00ff5f;
-    }
-    #output-row {
-        height: 3;
-        padding: 0 2;
-    }
-    #output-row Label {
-        width: 12;
-        color: #00ff5f;
-        padding: 1 0 0 0;
-    }
-    #output-row Input {
-        width: 1fr;
+    #options-row Select {
+        width: 14;
+        margin: 0 1 0 0;
         background: #14181a;
         color: #d7ffd7;
+        border: tall #1a1f22;
+    }
+    #options-row Select:focus {
+        border: tall #00ff5f;
+    }
+    #options-row .gap {
+        width: 1fr;
+    }
+    Checkbox {
+        color: #d7ffd7;
+        background: transparent;
+        border: none;
+        padding: 0 1;
+        margin: 0 1 0 0;
+    }
+    Checkbox > .toggle--button {
+        color: #00ff5f;
     }
     #buttons {
         height: 3;
-        padding: 0 2;
+        margin: 0 2;
     }
     Button {
-        margin: 0 1;
+        margin: 0 1 0 0;
         background: #14181a;
         color: #00ff5f;
         border: tall #1a1f22;
     }
     Button.-primary {
-        background: #00ff5f 20%;
         color: #00ff5f;
         border: tall #00ff5f;
     }
@@ -142,13 +131,13 @@ class ReconFoxApp(App[None]):
     }
     #phases {
         height: auto;
-        padding: 0 2;
+        margin: 0 2;
     }
     .phase-row {
         height: 1;
     }
     .phase-label {
-        width: 14;
+        width: 12;
         color: #d7ffd7;
     }
     .phase-label.-running { color: #ffb000; }
@@ -167,7 +156,7 @@ class ReconFoxApp(App[None]):
     #findings {
         border: round #1f3a23;
         background: #07090a;
-        height: 10;
+        height: 8;
         margin: 0 2;
     }
     #findings > .datatable--header {
@@ -208,44 +197,46 @@ class ReconFoxApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(BANNER, id="banner")
 
-        with Horizontal(id="target-row"):
+        with Horizontal(id="target-row", classes="row"):
             yield Label("> target")
             yield Input(placeholder="https://example.com", id="url-input")
 
-        with Horizontal(id="options-row"):
-            with Vertical(classes="col"):
-                yield Label("[ mode ]")
-                with RadioSet(id="mode-set"):
-                    yield RadioButton("quick", value=True, id="m-q")
-                    yield RadioButton("full", id="m-f")
-                    yield RadioButton("stealth", id="m-s")
-            with Vertical(classes="col"):
-                yield Label("[ format ]")
-                with RadioSet(id="fmt-set"):
-                    yield RadioButton("markdown", value=True, id="f-md")
-                    yield RadioButton("html", id="f-html")
-                    yield RadioButton("json", id="f-json")
-            with Vertical(classes="col"):
-                yield Label("[ extras ]")
-                yield Checkbox("metasploit rpc", id="msf-checkbox")
-
-        with Horizontal(id="output-row"):
+        with Horizontal(id="output-row", classes="row"):
             yield Label("> output")
             yield Input(
-                placeholder="./reports/report.md (leave blank → auto-name)",
+                placeholder="./reports/report.md  (blank → auto-name)",
                 id="output-input",
             )
 
+        with Horizontal(id="options-row", classes="row"):
+            yield Label("> opts")
+            yield Select(
+                [(m.value, m.value) for m in ScanMode],
+                value=ScanMode.QUICK.value, id="mode-select",
+                allow_blank=False, prompt="mode",
+            )
+            yield Select(
+                [
+                    (ReportFormat.MARKDOWN.value, ReportFormat.MARKDOWN.value),
+                    (ReportFormat.HTML.value, ReportFormat.HTML.value),
+                    (ReportFormat.JSON.value, ReportFormat.JSON.value),
+                ],
+                value=ReportFormat.MARKDOWN.value, id="fmt-select",
+                allow_blank=False, prompt="format",
+            )
+            yield Checkbox("msf", id="msf-checkbox")
+            yield Static("", classes="gap")
+
         with Horizontal(id="buttons"):
-            yield Button("▶ run (^R)", id="start-btn", variant="primary")
+            yield Button("▶ run  (^R)", id="start-btn", variant="primary")
             yield Button("⏹ abort", id="stop-btn", variant="warning", disabled=True)
-            yield Button("clear log (^L)", id="clear-btn")
-            yield Button("quit (^C)", id="quit-btn", variant="error")
+            yield Button("clear  (^L)", id="clear-btn")
+            yield Button("quit  (^C)", id="quit-btn", variant="error")
 
         with Vertical(id="phases"):
             for phase in ("resolve", "nmap", "ffuf", "exploits"):
                 with Horizontal(classes="phase-row"):
-                    yield Label(f"  {phase:8s} ", classes="phase-label", id=f"lbl-{phase}")
+                    yield Label(f" {phase:8s}", classes="phase-label", id=f"lbl-{phase}")
                     yield ProgressBar(
                         total=100, show_eta=False, show_percentage=False,
                         classes="phase-bar", id=f"bar-{phase}",
@@ -270,15 +261,13 @@ class ReconFoxApp(App[None]):
         elif event.input.id == "output-input":
             self.output_path = event.value
 
-    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
-        if event.radio_set.id == "mode-set":
-            self.mode = [ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH][
-                event.radio_set.pressed_index
-            ]
-        elif event.radio_set.id == "fmt-set":
-            self.fmt = [
-                ReportFormat.MARKDOWN, ReportFormat.HTML, ReportFormat.JSON
-            ][event.radio_set.pressed_index]
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.value is Select.BLANK:
+            return
+        if event.select.id == "mode-select":
+            self.mode = ScanMode(str(event.value))
+        elif event.select.id == "fmt-select":
+            self.fmt = ReportFormat(str(event.value))
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "msf-checkbox":
