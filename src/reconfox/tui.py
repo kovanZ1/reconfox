@@ -1,37 +1,33 @@
 """reconfox Textual TUI — hacker-style single screen.
 
 Layout (top → bottom):
-  ╭─ banner (ASCII logo + amber tagline)
+  ╭─ banner (ANSI-shadow logo + amber tagline)
   ├─ target row: URL input
   ├─ output row: path input
-  ├─ opts row: mode select + format select + msf checkbox
-  ├─ buttons: run / abort / clear / quit
-  ├─ section: PHASES — 4 progress rows with label + bar + status
-  ├─ section: LIVE LOG — coloured stream of every step
-  ├─ section: FINDINGS — table of open ports / services
+  ├─ opts row: mode / format cycle-buttons + msf toggle
+  ├─ action row: run / abort / clear / quit
+  ├─ PHASES: 4 colored progress bars (resolve / nmap / ffuf / exploits)
+  ├─ LIVE LOG: coloured stream of every step
+  ├─ FINDINGS: table of open ports / services
   ╰─ status bar
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
-    Checkbox,
     DataTable,
     Footer,
     Input,
     Label,
-    Log,
-    ProgressBar,
-    Select,
+    RichLog,
     Static,
 )
 
@@ -50,11 +46,23 @@ if TYPE_CHECKING:
 
 DEFAULT_WORDLIST = Path("/usr/share/wordlists/dirb/common.txt")
 
-BANNER = r"""[bold #00ff5f] ____                       __         [/]
-[bold #00ff5f]|  _ \ ___  ___ ___  _ __  / _| _____  __[/]    [#ffb000]v0.2 // recon toolkit[/]
-[bold #00ff5f]| |_) / _ \/ __/ _ \| '_ \| |_ / _ \ \/ /[/]    [#5a5a5a]authorized testing only[/]
-[bold #00ff5f]|  _ <  __/ (_| (_) | | | |  _| (_) >  < [/]
-[bold #00ff5f]|_| \_\___|\___\___/|_| |_|_|  \___/_/\_\[/]"""
+_BANNER_FILE = Path(__file__).parent / "assets" / "banner.txt"
+_PHASES = ("resolve", "nmap", "ffuf", "exploits")
+_BAR_WIDTH = 34
+_MODE_CYCLE = (ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH)
+_FMT_CYCLE = (ReportFormat.MARKDOWN, ReportFormat.HTML, ReportFormat.JSON)
+
+
+def _load_banner() -> str:
+    try:
+        art = _BANNER_FILE.read_text(encoding="utf-8").rstrip("\n")
+    except OSError:
+        art = "  reconfox"
+    tagline = (
+        "[#ffb000]        v0.2 // recon toolkit[/]"
+        "  [#5a5a5a]· authorized testing only[/]"
+    )
+    return f"[bold #00ff5f]{art}[/]\n{tagline}"
 
 
 class ReconFoxApp(App[None]):
@@ -65,15 +73,15 @@ class ReconFoxApp(App[None]):
         background: #0b0d0e;
     }
     #banner {
-        height: 5;
-        padding: 0 2;
+        height: 8;
+        padding: 1 2 0 2;
     }
     .row {
         height: 3;
         margin: 0 2;
     }
     .row > Label {
-        width: 9;
+        width: 10;
         color: #00ff5f;
         content-align: left middle;
         height: 3;
@@ -81,70 +89,47 @@ class ReconFoxApp(App[None]):
     }
     .row Input {
         width: 1fr;
-        background: #14181a;
+        background: #11161a;
         color: #d7ffd7;
-        border: tall #1a1f22;
+        border: tall #1a2a1f;
     }
     .row Input:focus {
         border: tall #00ff5f;
     }
-    #options-row Select {
-        width: 22;
+    /* opt cycle-buttons */
+    .opt-btn {
         height: 3;
+        min-width: 20;
         margin: 0 1 0 0;
-        background: #14181a;
-        color: #d7ffd7;
-        border: tall #1a1f22;
-    }
-    #options-row Select:focus {
-        border: tall #00ff5f;
-    }
-    #options-row Checkbox {
-        height: 3;
-        width: 12;
-        padding: 1 1 0 1;
-        color: #d7ffd7;
-        background: transparent;
-        border: tall #1a1f22;
-        content-align: left middle;
-    }
-    #options-row Checkbox:focus {
-        border: tall #00ff5f;
-    }
-    #options-row Checkbox.-on {
+        background: #11161a;
         color: #00ff5f;
+        border: tall #1a2a1f;
+        text-style: bold;
     }
-    #options-row .gap {
-        width: 1fr;
-        height: 3;
+    .opt-btn:hover { border: tall #00ff5f; }
+    .opt-btn.-on {
+        color: #0b0d0e;
+        background: #00ff5f;
+        border: tall #00ff5f;
     }
-    #buttons {
+    #opts-gap { width: 1fr; height: 3; }
+    /* action buttons */
+    #actions {
         height: 3;
         margin: 1 2 0 2;
     }
-    Button {
+    #actions Button {
         margin: 0 1 0 0;
-        min-width: 14;
-        background: #14181a;
+        min-width: 16;
+        background: #11161a;
         color: #00ff5f;
-        border: tall #1a1f22;
+        border: tall #1a2a1f;
+        text-style: bold;
     }
-    Button.-primary {
-        color: #00ff5f;
-        border: tall #00ff5f;
-    }
-    Button.-warning {
-        color: #ffb000;
-        border: tall #ffb000;
-    }
-    Button.-error {
-        color: #ff4040;
-        border: tall #ff4040;
-    }
-    Button:disabled {
-        color: #444;
-        border: tall #1a1f22;
-    }
+    #start-btn { color: #00ff5f; border: tall #00ff5f; }
+    #stop-btn  { color: #ffb000; border: tall #ffb000; }
+    #quit-btn  { color: #ff4040; border: tall #ff4040; }
+    #actions Button:disabled { color: #3a3f3a; border: tall #1a2a1f; text-style: none; }
     .section-title {
         height: 1;
         padding: 0 2;
@@ -152,34 +137,11 @@ class ReconFoxApp(App[None]):
         text-style: bold;
         margin: 1 0 0 0;
     }
-    #phases {
+    #phases-body {
         height: 4;
         padding: 0 2;
+        background: #07090a;
     }
-    .phase-row {
-        height: 1;
-    }
-    .phase-label {
-        width: 10;
-        color: #5a5a5a;
-        content-align: left middle;
-    }
-    .phase-label.-running { color: #ffb000; }
-    .phase-label.-done    { color: #00ff5f; }
-    .phase-label.-fail    { color: #ff4040; }
-    .phase-bar {
-        width: 1fr;
-        height: 1;
-    }
-    .phase-status {
-        width: 18;
-        color: #5a5a5a;
-        content-align: right middle;
-        padding: 0 1 0 1;
-    }
-    .phase-status.-running { color: #ffb000; }
-    .phase-status.-done    { color: #00ff5f; }
-    .phase-status.-fail    { color: #ff4040; }
     #log {
         border: round #1f3a23;
         background: #07090a;
@@ -195,13 +157,15 @@ class ReconFoxApp(App[None]):
         margin: 0 2;
     }
     #findings > .datatable--header {
-        background: #14181a;
+        background: #11161a;
         color: #00ff5f;
         text-style: bold;
     }
     #status-bar {
+        dock: bottom;
         padding: 0 2;
         height: 1;
+        background: #07090a;
         color: #5a5a5a;
     }
     """
@@ -227,10 +191,16 @@ class ReconFoxApp(App[None]):
         self._factory = orchestrator_factory
         self._wordlist = wordlist
         self._scan_worker: Worker[None] | None = None
-        self._phase_state: dict[str, str] = {}
+        # phase -> {"state": str, "frac": float, "dur": float|None}
+        self._phases: dict[str, dict[str, Any]] = {
+            p: {"state": "idle", "frac": 0.0, "dur": None} for p in _PHASES
+        }
+        self._phase_timer: Any | None = None
+
+    # --- compose ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Static(BANNER, id="banner")
+        yield Static(_load_banner(), id="banner")
 
         with Horizontal(id="target-row", classes="row"):
             yield Label("> target")
@@ -239,53 +209,33 @@ class ReconFoxApp(App[None]):
         with Horizontal(id="output-row", classes="row"):
             yield Label("> output")
             yield Input(
-                placeholder="./reports/report.md  (blank → auto-name)",
+                placeholder="./reports/report.md   (blank → auto-name)",
                 id="output-input",
             )
 
-        with Horizontal(id="options-row", classes="row"):
+        with Horizontal(id="opts-row", classes="row"):
             yield Label("> opts")
-            yield Select(
-                [(m.value, m.value) for m in ScanMode],
-                value=ScanMode.QUICK.value, id="mode-select",
-                allow_blank=False, prompt="mode",
-            )
-            yield Select(
-                [
-                    (ReportFormat.MARKDOWN.value, ReportFormat.MARKDOWN.value),
-                    (ReportFormat.HTML.value, ReportFormat.HTML.value),
-                    (ReportFormat.JSON.value, ReportFormat.JSON.value),
-                ],
-                value=ReportFormat.MARKDOWN.value, id="fmt-select",
-                allow_blank=False, prompt="format",
-            )
-            yield Checkbox("msf", id="msf-checkbox")
-            yield Static("", classes="gap")
+            yield Button(self._mode_label(), id="mode-btn", classes="opt-btn")
+            yield Button(self._fmt_label(), id="fmt-btn", classes="opt-btn")
+            yield Button(self._msf_label(), id="msf-btn", classes="opt-btn")
+            yield Static("", id="opts-gap")
 
-        with Horizontal(id="buttons"):
-            yield Button("▶  RUN  ^R", id="start-btn", variant="primary")
-            yield Button("⏹  ABORT", id="stop-btn", variant="warning", disabled=True)
+        with Horizontal(id="actions"):
+            yield Button("▶  RUN  ^R", id="start-btn")
+            yield Button("■  ABORT", id="stop-btn", disabled=True)
             yield Button("CLEAR  ^L", id="clear-btn")
-            yield Button("✕  QUIT  ^C", id="quit-btn", variant="error")
+            yield Button("✕  QUIT  ^C", id="quit-btn")
 
-        yield Static("── PHASES ──────────────", classes="section-title")
-        with Vertical(id="phases"):
-            for phase in ("resolve", "nmap", "ffuf", "exploits"):
-                with Horizontal(classes="phase-row"):
-                    yield Label(f" {phase:8s}", classes="phase-label", id=f"lbl-{phase}")
-                    yield ProgressBar(
-                        total=100, show_eta=False, show_percentage=False,
-                        classes="phase-bar", id=f"bar-{phase}",
-                    )
-                    yield Label("idle", classes="phase-status", id=f"st-{phase}")
+        yield Static("══ PHASES ══════════════════", classes="section-title")
+        yield Static(id="phases-body")
 
-        yield Static("── LIVE LOG ────────────", classes="section-title")
-        yield Log(id="log", highlight=True)
+        yield Static("══ LIVE LOG ════════════════", classes="section-title")
+        yield RichLog(id="log", markup=True, wrap=False, max_lines=2000)
 
-        yield Static("── FINDINGS ────────────", classes="section-title")
+        yield Static("══ FINDINGS ════════════════", classes="section-title")
         yield DataTable(id="findings")
 
-        yield Static("ready.  ^R run  ^L clear  ^C quit", id="status-bar")
+        yield Static(self._idle_status(), id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -293,6 +243,22 @@ class ReconFoxApp(App[None]):
         self.sub_title = "authorized recon"
         table = self.query_one("#findings", DataTable)
         table.add_columns("port", "proto", "service", "product", "version")
+        self._render_phases()
+
+    # --- option labels ---------------------------------------------------
+
+    def _mode_label(self) -> str:
+        return f"mode: {self.mode.value} ▾"
+
+    def _fmt_label(self) -> str:
+        return f"fmt: {self.fmt.value} ▾"
+
+    def _msf_label(self) -> str:
+        return f"msf: {'ON' if self.use_metasploit else 'off'}"
+
+    @staticmethod
+    def _idle_status() -> str:
+        return "[#5a5a5a]ready  ·  ^R run   ^L clear   ^C quit[/]"
 
     # --- input handlers --------------------------------------------------
 
@@ -302,24 +268,15 @@ class ReconFoxApp(App[None]):
         elif event.input.id == "output-input":
             self.output_path = event.value
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.value is Select.BLANK:
-            return
-        if event.select.id == "mode-select":
-            self.mode = ScanMode(str(event.value))
-        elif event.select.id == "fmt-select":
-            self.fmt = ReportFormat(str(event.value))
-
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if event.checkbox.id == "msf-checkbox":
-            self.use_metasploit = event.value
-            event.checkbox.set_classes(
-                "-on" if event.value else ""
-            )
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
-        if bid == "start-btn":
+        if bid == "mode-btn":
+            self._cycle_mode()
+        elif bid == "fmt-btn":
+            self._cycle_fmt()
+        elif bid == "msf-btn":
+            self._toggle_msf()
+        elif bid == "start-btn":
             self.action_start_scan()
         elif bid == "stop-btn":
             self._cancel_scan()
@@ -328,10 +285,26 @@ class ReconFoxApp(App[None]):
         elif bid == "quit-btn":
             self.exit()
 
+    def _cycle_mode(self) -> None:
+        idx = (_MODE_CYCLE.index(self.mode) + 1) % len(_MODE_CYCLE)
+        self.mode = _MODE_CYCLE[idx]
+        self.query_one("#mode-btn", Button).label = self._mode_label()
+
+    def _cycle_fmt(self) -> None:
+        idx = (_FMT_CYCLE.index(self.fmt) + 1) % len(_FMT_CYCLE)
+        self.fmt = _FMT_CYCLE[idx]
+        self.query_one("#fmt-btn", Button).label = self._fmt_label()
+
+    def _toggle_msf(self) -> None:
+        self.use_metasploit = not self.use_metasploit
+        btn = self.query_one("#msf-btn", Button)
+        btn.label = self._msf_label()
+        btn.set_class(self.use_metasploit, "-on")
+
     # --- actions ---------------------------------------------------------
 
     def action_clear_log(self) -> None:
-        self.query_one("#log", Log).clear()
+        self.query_one("#log", RichLog).clear()
 
     def action_start_scan(self) -> None:
         url = self.target_url.strip()
@@ -341,23 +314,24 @@ class ReconFoxApp(App[None]):
         if self._scan_worker is not None and not self._scan_worker.is_finished:
             return
 
-        log = self.query_one("#log", Log)
-        log.clear()
-        for phase in ("resolve", "nmap", "ffuf", "exploits"):
-            self._reset_phase(phase)
+        self.query_one("#log", RichLog).clear()
+        for p in _PHASES:
+            self._phases[p] = {"state": "idle", "frac": 0.0, "dur": None}
+        self._render_phases()
         self.query_one("#findings", DataTable).clear()
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#stop-btn", Button).disabled = False
 
         self._log("[#00ff5f][*][/] starting scan")
-        self._log(f"[#5a5a5a]    target: {url}[/]")
-        self._log(f"[#5a5a5a]    mode:   {self.mode.value}[/]")
-        self._log(f"[#5a5a5a]    fmt:    {self.fmt.value}[/]")
-        self._log(f"[#5a5a5a]    msf:    {'on' if self.use_metasploit else 'off'}[/]")
+        self._log(f"[#5a5a5a]    target : {url}[/]")
+        self._log(f"[#5a5a5a]    mode   : {self.mode.value}[/]")
+        self._log(f"[#5a5a5a]    format : {self.fmt.value}[/]")
+        self._log(f"[#5a5a5a]    msf    : {'on' if self.use_metasploit else 'off'}[/]")
 
         self._set_status(
-            f"[#ffb000]running...[/] target=[#00ff5f]{url}[/] mode=[#00ff5f]{self.mode.value}[/]"
+            f"[#ffb000]running...[/] [#00ff5f]{url}[/] · mode=[#00ff5f]{self.mode.value}[/]"
         )
+        self._phase_timer = self.set_interval(0.08, self._tick_phases)
         self._scan_worker = self.run_worker(self._run_scan(url), exclusive=True)
 
     def _cancel_scan(self) -> None:
@@ -365,8 +339,8 @@ class ReconFoxApp(App[None]):
             self._scan_worker.cancel()
             self._log("[#ff4040][-][/] scan aborted by user")
             self._set_status("[#ff4040]aborted[/]")
-            self.query_one("#start-btn", Button).disabled = False
-            self.query_one("#stop-btn", Button).disabled = True
+            self._stop_timer()
+            self._reenable_run()
 
     # --- the scan --------------------------------------------------------
 
@@ -381,88 +355,99 @@ class ReconFoxApp(App[None]):
         except Exception as exc:  # noqa: BLE001
             self._log(f"[#ff4040][-][/] {exc}")
             self._set_status(f"[#ff4040]crash: {exc}[/]")
+            self._stop_timer()
             self._reenable_run()
             return
 
         self._populate_findings(result)
-        written = self._save_report(result)
-        for path, fmt in written:
+        for path, fmt in self._save_report(result):
             self._log(f"[#00ff5f][+][/] report ([#ffb000]{fmt.value}[/]) → {path}")
 
-        status_color = {
+        color = {
             ScanStatus.COMPLETED: "#00ff5f",
             ScanStatus.PARTIAL: "#ffb000",
             ScanStatus.FAILED: "#ff4040",
         }.get(result.status, "#5a5a5a")
         if result.duration_seconds is not None:
-            tail = (
-                f"[{status_color}]{result.status.value}[/]  "
+            self._set_status(
+                f"[{color}]{result.status.value}[/]  ·  "
                 f"ports=[#00ff5f]{len(result.ports)}[/]  "
                 f"web=[#00ff5f]{len(result.web_findings)}[/]  "
                 f"vulns=[#00ff5f]{len(result.vulnerabilities)}[/]  "
-                f"time={result.duration_seconds:.1f}s"
+                f"[#5a5a5a]{result.duration_seconds:.1f}s[/]"
             )
         else:
-            tail = f"[{status_color}]{result.status.value}[/]"
-        self._set_status(tail)
+            self._set_status(f"[{color}]{result.status.value}[/]")
+        self._stop_timer()
         self._reenable_run()
 
-    # --- progress / log helpers ------------------------------------------
+    # --- progress / phases ----------------------------------------------
 
     def _on_progress(self, event: ProgressEvent) -> None:
         self.call_from_thread(self._apply_progress, event)
 
     def _apply_progress(self, event: ProgressEvent) -> None:
+        phase = event.phase
         if event.status == "started":
-            self._set_phase(event.phase, "running", "running...")
-            self._log(f"[#ffb000][*][/] [bold]{event.phase}[/]: {event.message or 'started'}")
+            self._phases[phase] = {"state": "running", "frac": 0.0, "dur": None}
+            self._log(f"[#ffb000][*][/] [bold]{phase}[/]: {event.message or 'started'}")
         elif event.status == "info":
             self._log(f"[#5a5a5a]    →[/] {event.message}")
         elif event.status == "completed":
-            tail = ""
-            if event.duration_seconds is not None:
-                tail = f" [#5a5a5a]({event.duration_seconds:.1f}s)[/]"
-            self._set_phase(event.phase, "done", f"done {event.duration_seconds:.1f}s"
-                            if event.duration_seconds is not None else "done")
-            self._log(
-                f"[#00ff5f][+][/] [bold]{event.phase}[/]: "
-                f"{event.message or 'completed'}{tail}"
-            )
+            self._phases[phase] = {
+                "state": "done", "frac": 1.0, "dur": event.duration_seconds,
+            }
+            tail = f" [#5a5a5a]({event.duration_seconds:.1f}s)[/]" if event.duration_seconds else ""
+            self._log(f"[#00ff5f][+][/] [bold]{phase}[/]: {event.message or 'done'}{tail}")
         elif event.status == "failed":
-            self._set_phase(event.phase, "fail", "failed")
-            self._log(f"[#ff4040][-][/] [bold]{event.phase}[/]: {event.message or 'failed'}")
+            self._phases[phase] = {"state": "fail", "frac": 1.0, "dur": None}
+            self._log(f"[#ff4040][-][/] [bold]{phase}[/]: {event.message or 'failed'}")
+        self._render_phases()
 
-    def _reset_phase(self, phase: str) -> None:
-        self._phase_state[phase] = "idle"
-        bar = self.query_one(f"#bar-{phase}", ProgressBar)
-        bar.update(total=100, progress=0)
-        label = self.query_one(f"#lbl-{phase}", Label)
-        label.set_classes("phase-label")
-        status = self.query_one(f"#st-{phase}", Label)
-        status.set_classes("phase-status")
-        status.update("idle")
+    def _tick_phases(self) -> None:
+        changed = False
+        for st in self._phases.values():
+            if st["state"] == "running":
+                st["frac"] = (st["frac"] + 0.05) % 1.0
+                changed = True
+        if changed:
+            self._render_phases()
 
-    def _set_phase(self, phase: str, state: str, status_text: str) -> None:
-        self._phase_state[phase] = state
-        bar = self.query_one(f"#bar-{phase}", ProgressBar)
-        label = self.query_one(f"#lbl-{phase}", Label)
-        status = self.query_one(f"#st-{phase}", Label)
-        if state == "running":
-            bar.update(total=None, progress=0)
-            label.set_classes("phase-label -running")
-            status.set_classes("phase-status -running")
-        elif state == "done":
-            bar.update(total=100, progress=100)
-            label.set_classes("phase-label -done")
-            status.set_classes("phase-status -done")
+    def _stop_timer(self) -> None:
+        if self._phase_timer is not None:
+            self._phase_timer.stop()
+            self._phase_timer = None
+
+    def _render_phases(self) -> None:
+        lines = [self._phase_line(p) for p in _PHASES]
+        self.query_one("#phases-body", Static).update("\n".join(lines))
+
+    def _phase_line(self, name: str) -> str:
+        st = self._phases[name]
+        state, frac, dur = st["state"], st["frac"], st["dur"]
+        if state == "done":
+            bar = f"[#00ff5f]{'█' * _BAR_WIDTH}[/]"
+            status = f"[#00ff5f]done {dur:.1f}s[/]" if dur is not None else "[#00ff5f]done[/]"
+            lbl = "#00ff5f"
         elif state == "fail":
-            bar.update(total=100, progress=100)
-            label.set_classes("phase-label -fail")
-            status.set_classes("phase-status -fail")
-        status.update(status_text)
+            bar = f"[#ff4040]{'█' * _BAR_WIDTH}[/]"
+            status = "[#ff4040]failed[/]"
+            lbl = "#ff4040"
+        elif state == "running":
+            n = max(1, int(frac * _BAR_WIDTH))
+            bar = f"[#ffb000]{'█' * n}[/][#1a2a1f]{'─' * (_BAR_WIDTH - n)}[/]"
+            status = "[#ffb000]scanning[/]"
+            lbl = "#ffb000"
+        else:
+            bar = f"[#1a2a1f]{'─' * _BAR_WIDTH}[/]"
+            status = "[#3a3f3a]idle[/]"
+            lbl = "#5a5a5a"
+        return f"[{lbl}]{name:<9}[/] {bar}  {status}"
+
+    # --- log / findings --------------------------------------------------
 
     def _log(self, line: str) -> None:
-        self.query_one("#log", Log).write_line(line)
+        self.query_one("#log", RichLog).write(line)
 
     def _set_status(self, msg: str) -> None:
         self.query_one("#status-bar", Static).update(msg)
@@ -472,11 +457,8 @@ class ReconFoxApp(App[None]):
         table.clear()
         for p in sorted(result.ports, key=lambda x: x.port):
             table.add_row(
-                str(p.port),
-                p.protocol,
-                p.service or "—",
-                p.product or "—",
-                p.version or "—",
+                str(p.port), p.protocol, p.service or "—",
+                p.product or "—", p.version or "—",
             )
 
     def _save_report(self, result: ScanResult) -> list[tuple[Path, ReportFormat]]:
@@ -490,8 +472,7 @@ class ReconFoxApp(App[None]):
                     written.append((p, used))
                 else:
                     file_path.mkdir(parents=True, exist_ok=True)
-                    p = write_report(result, file_path, self.fmt)
-                    written.append((p, self.fmt))
+                    written.append((write_report(result, file_path, self.fmt), self.fmt))
             else:
                 out_dir = Path("./reports")
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -511,6 +492,3 @@ def run_tui(orchestrator_factory: Any, wordlist: Path = DEFAULT_WORDLIST) -> Non
     """Entry point — invoked from cli.py."""
     app = ReconFoxApp(orchestrator_factory=orchestrator_factory, wordlist=wordlist)
     app.run()
-
-
-_ = datetime

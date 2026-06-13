@@ -5,6 +5,25 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект следует [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.2.1] — 2026-06-13
+
+### Исправлено
+- **opts-дропдауны рендерились пустыми** — `Select` с двойной рамкой схлопывал
+  значение в 0 строк. Заменены на cycle-кнопки `mode: quick ▾` / `fmt: md ▾` /
+  `msf: off`, которые циклически переключаются по клику — значение всегда видно.
+- **LIVE LOG показывал сырую разметку** (`[#00ff5f]...`) — `Log` не парсит
+  Rich-markup. Заменён на `RichLog(markup=True)` — цветной вывод.
+
+### Изменено
+- Полная переработка TUI под AI-референс (higgsfield/nano_banana):
+  - Логотип ANSI-Shadow «reconfox» (генерируется pyfiglet, лежит в
+    `assets/banner.txt`, грузится в рантайме)
+  - PHASES: толстые цветные бары (зелёный=done, янтарный=running с анимацией
+    через `set_interval`) + статус справа, вместо тонких серых линий
+  - Секции `══ PHASES ══` / `══ LIVE LOG ══` / `══ FINDINGS ══` в янтаре
+  - Status bar закреплён внизу (`dock: bottom`)
+- TUI-тесты расширены: цикл mode/format, тоггл msf, полный прогон скана (7 шт.)
+
 ## [0.2.0] — 2026-06-10
 
 ### Добавлено
