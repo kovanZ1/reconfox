@@ -119,6 +119,45 @@ class TestMarkdown:
         assert "## Ошибки" in out
         assert "nmap: timeout" in out
 
+    def test_neutralizes_markup_injection_in_scan_data(self) -> None:
+        """Scan data is attacker-influenced; it must not inject HTML/Markdown."""
+        target = Target.from_url("https://evil.test")
+        target.ip = "10.0.0.1"
+        result = ScanResult(
+            target=target,
+            mode=ScanMode.QUICK,
+            started_at=datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 10, 12, 0, 5, tzinfo=UTC),
+            status=ScanStatus.COMPLETED,
+            ports=[
+                PortInfo(
+                    port=80, protocol="tcp", state="open", service="http",
+                    product="<script>alert(1)</script>", version="1|2",
+                ),
+            ],
+            web_findings=[
+                WebFinding(url="https://evil.test/a`b|c", status=200, length=1),
+            ],
+            vulnerabilities=[
+                Vulnerability(
+                    title="Evil\n## Injected Heading",
+                    severity=Severity.HIGH,
+                    source="searchsploit",
+                    affected_port=80,
+                ),
+            ],
+            errors=["<img src=x onerror=alert(1)>"],
+        )
+        out = render_markdown(result)
+        # raw HTML must be neutralized (the markdown is later rendered as HTML)
+        assert "<script>alert(1)</script>" not in out
+        assert "&lt;script&gt;" in out
+        assert "<img src=x" not in out
+        # a newline in scan data must not spawn a real heading/section
+        assert "\n## Injected Heading" not in out
+        # a pipe must be escaped so it can't break out of a table cell
+        assert "1\\|2" in out
+
 
 # --- HTML ----------------------------------------------------------------
 

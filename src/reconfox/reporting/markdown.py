@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import html
 from io import StringIO
 
 from reconfox.models import ScanResult
+
+
+def _md(value: object, default: str = "—") -> str:
+    """Neutralize untrusted text so scan data can't inject Markdown or HTML.
+
+    Scan output (service banners, page titles, URLs, redirect targets, error
+    strings) is attacker-influenced, and the rendered Markdown is frequently
+    converted to HTML downstream — so we HTML-escape and defang the table/inline
+    metacharacters (``|`` and backticks) and flatten newlines.
+    """
+    if value is None:
+        return default
+    text = str(value)
+    if not text:
+        return default
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = html.escape(text, quote=False)
+    return text.replace("|", "\\|").replace("`", "\\`")
 
 
 def render_markdown(result: ScanResult) -> str:
@@ -21,7 +40,7 @@ def render_markdown(result: ScanResult) -> str:
 
 def _header(buf: StringIO, result: ScanResult) -> None:
     buf.write("# reconfox report\n\n")
-    buf.write(f"**Target:** `{result.target.url}`  \n")
+    buf.write(f"**Target:** {_md(result.target.url)}  \n")
     buf.write(f"**Mode:** `{result.mode.value}`  \n")
     buf.write(f"**Status:** `{result.status.value}`  \n")
     buf.write(f"**Started:** {result.started_at.isoformat()}  \n")
@@ -34,19 +53,19 @@ def _target_block(buf: StringIO, result: ScanResult) -> None:
     t = result.target
     buf.write("## Цель\n\n")
     buf.write("| Поле | Значение |\n|---|---|\n")
-    buf.write(f"| Hostname | `{t.hostname}` |\n")
-    buf.write(f"| IP | `{t.ip or '—'}` |\n")
+    buf.write(f"| Hostname | {_md(t.hostname)} |\n")
+    buf.write(f"| IP | {_md(t.ip)} |\n")
     buf.write(f"| Port | {t.port} |\n")
     buf.write(f"| HTTPS | {'да' if t.is_https else 'нет'} |\n")
     if t.asn:
         asn_str = f"AS{t.asn.asn} {t.asn.asn_name or ''}".strip()
-        buf.write(f"| ASN | {asn_str} |\n")
+        buf.write(f"| ASN | {_md(asn_str)} |\n")
         if t.asn.isp:
-            buf.write(f"| ISP | {t.asn.isp} |\n")
+            buf.write(f"| ISP | {_md(t.asn.isp)} |\n")
     if t.geo:
         loc = ", ".join(filter(None, [t.geo.city, t.geo.region, t.geo.country]))
         if loc:
-            buf.write(f"| Локация | {loc} |\n")
+            buf.write(f"| Локация | {_md(loc)} |\n")
     buf.write("\n")
 
 
@@ -59,7 +78,7 @@ def _ports_block(buf: StringIO, result: ScanResult) -> None:
     for p in sorted(result.ports, key=lambda x: x.port):
         buf.write(
             f"| {p.port} | {p.protocol} | {p.state} | "
-            f"{p.service or '—'} | {p.product or '—'} | {p.version or '—'} |\n"
+            f"{_md(p.service)} | {_md(p.product)} | {_md(p.version)} |\n"
         )
     buf.write("\n")
 
@@ -70,10 +89,7 @@ def _web_block(buf: StringIO, result: ScanResult) -> None:
     buf.write("## Веб-находки\n\n")
     buf.write("| URL | Status | Length | Redirect |\n|---|---|---|---|\n")
     for f in result.web_findings:
-        buf.write(
-            f"| `{f.url}` | {f.status} | {f.length} | "
-            f"{f.redirect or '—'} |\n"
-        )
+        buf.write(f"| {_md(f.url)} | {f.status} | {f.length} | {_md(f.redirect)} |\n")
     buf.write("\n")
 
 
@@ -84,17 +100,17 @@ def _vuln_block(buf: StringIO, result: ScanResult) -> None:
     by_sev = sorted(result.vulnerabilities, key=lambda v: -v.severity.score)
     for v in by_sev:
         port_info = f" (порт {v.affected_port})" if v.affected_port else ""
-        cve_info = f" — {v.cve}" if v.cve else ""
-        buf.write(f"### [{v.severity.value.upper()}] {v.title}{cve_info}{port_info}\n\n")
+        cve_info = f" — {_md(v.cve)}" if v.cve else ""
+        buf.write(f"### [{v.severity.value.upper()}] {_md(v.title)}{cve_info}{port_info}\n\n")
         buf.write(f"- **Источник:** {v.source}\n")
         if v.description:
-            buf.write(f"- **Описание:** {v.description}\n")
+            buf.write(f"- **Описание:** {_md(v.description)}\n")
         if v.metasploit_module:
-            buf.write(f"- **Metasploit:** `{v.metasploit_module}`\n")
+            buf.write(f"- **Metasploit:** {_md(v.metasploit_module)}\n")
         if v.exploit_path:
-            buf.write(f"- **Exploit:** `{v.exploit_path}`\n")
+            buf.write(f"- **Exploit:** {_md(v.exploit_path)}\n")
         for ref in v.references:
-            buf.write(f"- {ref}\n")
+            buf.write(f"- {_md(ref)}\n")
         buf.write("\n")
 
 
@@ -103,7 +119,7 @@ def _errors_block(buf: StringIO, result: ScanResult) -> None:
         return
     buf.write("## Ошибки\n\n")
     for err in result.errors:
-        buf.write(f"- `{err}`\n")
+        buf.write(f"- {_md(err)}\n")
     buf.write("\n")
 
 
