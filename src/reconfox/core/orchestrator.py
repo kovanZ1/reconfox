@@ -1,85 +1,51 @@
-"""Orchestrator — runs Resolver, then nmap and ffuf in parallel, aggregates ScanResult.
+"""Orchestrator — a generic driver that schedules Scanner stages by dependency.
 
-Exposes a callback-based progress channel so TUI and CLI can render live progress.
+The driver knows nothing about nmap/ffuf specifically: it runs every registered
+stage whose dependencies are satisfied, in concurrent waves, isolating failures
+so one broken scanner can't kill the run. A ``critical`` stage failing (resolve)
+aborts the rest. New capabilities plug in via ``default_pipeline`` / a custom
+stage list — no orchestrator edits required.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
 
-from reconfox.core.ffuf_scanner import FfufError
-from reconfox.core.nmap_scanner import NmapError
-from reconfox.core.resolver import ResolverError
-from reconfox.models import (
-    PortInfo,
-    ScanMode,
-    ScanResult,
-    ScanStatus,
-    Target,
-    Vulnerability,
-    WebFinding,
+from reconfox.core.scanner import (
+    Phase,
+    ProgressCallback,
+    ProgressEvent,
+    ScanContext,
+    Scanner,
+    Status,
 )
+from reconfox.core.stages import default_pipeline
+from reconfox.models import ScanMode, ScanResult, ScanStatus, Target
 
-Phase = Literal["resolve", "nmap", "ffuf", "exploits", "report"]
-Status = Literal["started", "info", "completed", "failed"]
-
-
-@dataclass(frozen=True)
-class ProgressEvent:
-    phase: Phase
-    status: Status
-    message: str | None = None
-    duration_seconds: float | None = None
-
-
-# Protocols let tests inject fakes without inheritance.
-class ResolverProtocol(Protocol):
-    async def resolve(self, target: Target) -> Target: ...
-
-
-class NmapProtocol(Protocol):
-    async def scan(
-        self, target: str, mode: ScanMode, ports: str | None = None
-    ) -> list[PortInfo]: ...
-
-
-class FfufProtocol(Protocol):
-    async def fuzz(
-        self,
-        target_url: str,
-        wordlist: Path,
-        match_codes: list[int] | tuple[int, ...] = ...,
-        threads: int = ...,
-    ) -> list[WebFinding]: ...
-
-
-class ExploitFinderProtocol(Protocol):
-    async def find_for_ports(self, ports: list[PortInfo]) -> list[Vulnerability]: ...
-
-
-ProgressCallback = Callable[[ProgressEvent], None]
+__all__ = [
+    "Orchestrator",
+    "Phase",
+    "ProgressCallback",
+    "ProgressEvent",
+    "ScanContext",
+    "Scanner",
+    "Status",
+    "default_pipeline",
+]
 
 
 class Orchestrator:
     def __init__(
         self,
-        resolver: ResolverProtocol,
-        nmap_scanner: NmapProtocol,
-        ffuf_scanner: FfufProtocol,
+        stages: Sequence[Scanner],
         wordlist: Path,
-        exploit_finder: ExploitFinderProtocol | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> None:
-        self.resolver = resolver
-        self.nmap = nmap_scanner
-        self.ffuf = ffuf_scanner
-        self.exploit_finder = exploit_finder
+        self.stages = list(stages)
         self.wordlist = wordlist
         self._on_progress = on_progress
 
@@ -121,141 +87,48 @@ class Orchestrator:
             started_at=started_at,
             status=ScanStatus.RUNNING,
         )
-
-        if not await self._do_resolve(target, result):
-            result.finished_at = datetime.now(UTC)
-            result.status = ScanStatus.FAILED
-            return result
-
-        ports, findings = await asyncio.gather(
-            self._do_nmap(target, mode, result),
-            self._do_ffuf(target, result),
+        ctx = ScanContext(
+            target=target,
+            mode=mode,
+            wordlist=self.wordlist,
+            result=result,
+            emit=self._emit,
         )
-        result.ports = ports
-        result.web_findings = findings
-        if self.exploit_finder is not None and ports:
-            result.vulnerabilities = await self._do_exploits(ports, result)
+        await self._drive(ctx)
         result.finished_at = datetime.now(UTC)
         result.status = self._derive_status(result)
         return result
 
-    async def _do_resolve(self, target: Target, result: ScanResult) -> bool:
-        self._emit("resolve", "started", f"resolving {target.hostname}")
+    async def _drive(self, ctx: ScanContext) -> None:
+        """Run stages in dependency-ordered concurrent waves."""
+        done: set[str] = set()
+        remaining = list(self.stages)
+        aborted = False
+        while remaining and not aborted:
+            ready = [s for s in remaining if all(dep in done for dep in s.depends_on)]
+            if not ready:
+                break  # unsatisfiable dependency — stop rather than spin
+            outcomes = await asyncio.gather(*(self._run_stage(s, ctx) for s in ready))
+            for stage, ok in zip(ready, outcomes, strict=True):
+                done.add(stage.name)
+                remaining.remove(stage)
+                if not ok and stage.critical:
+                    aborted = True
+
+    async def _run_stage(self, stage: Scanner, ctx: ScanContext) -> bool:
+        """Run one stage; return True on success/skip, False on failure."""
+        if not stage.applicable(ctx):
+            return True
         start = datetime.now(UTC)
         try:
-            await self.resolver.resolve(target)
-        except ResolverError as exc:
+            await stage.run(ctx)
+        except Exception as exc:  # noqa: BLE001 — stage isolation; one failure must not kill the run
             self._emit(
-                "resolve",
-                "failed",
-                str(exc),
-                (datetime.now(UTC) - start).total_seconds(),
+                stage.phase, "failed", str(exc), (datetime.now(UTC) - start).total_seconds()
             )
-            result.errors.append(f"resolve: {exc}")
+            ctx.result.errors.append(f"{stage.phase}: {exc}")
             return False
-        self._emit("resolve", "info", f"ip: {target.ip}")
-        if target.asn is not None and target.asn.asn:
-            asn_str = f"AS{target.asn.asn} {target.asn.asn_name or ''}".strip()
-            self._emit("resolve", "info", f"asn: {asn_str}")
-        if target.geo is not None and (target.geo.city or target.geo.country):
-            loc = ", ".join(filter(None, [target.geo.city, target.geo.country]))
-            self._emit("resolve", "info", f"location: {loc}")
-        self._emit(
-            "resolve",
-            "completed",
-            duration=(datetime.now(UTC) - start).total_seconds(),
-        )
         return True
-
-    async def _do_nmap(
-        self, target: Target, mode: ScanMode, result: ScanResult
-    ) -> list[PortInfo]:
-        if target.ip is None:
-            return []
-        self._emit("nmap", "started", f"scanning {target.ip} (mode={mode.value})")
-        start = datetime.now(UTC)
-        try:
-            ports = await self.nmap.scan(target.ip, mode)
-        except NmapError as exc:
-            self._emit(
-                "nmap", "failed", str(exc), (datetime.now(UTC) - start).total_seconds()
-            )
-            result.errors.append(f"nmap: {exc}")
-            return []
-        open_ports = [p for p in ports if p.state == "open"]
-        for p in sorted(open_ports, key=lambda x: x.port):
-            svc = p.service or "?"
-            ver = f"{p.product or ''} {p.version or ''}".strip()
-            tail = f" {ver}" if ver else ""
-            self._emit("nmap", "info", f"{p.port}/{p.protocol} open {svc}{tail}")
-        self._emit(
-            "nmap",
-            "completed",
-            f"{len(open_ports)} open port(s)",
-            (datetime.now(UTC) - start).total_seconds(),
-        )
-        return ports
-
-    async def _do_exploits(
-        self, ports: list[PortInfo], result: ScanResult
-    ) -> list[Vulnerability]:
-        if self.exploit_finder is None:  # guarded by caller, narrow type for mypy
-            return []
-        relevant = [p for p in ports if p.product]
-        self._emit(
-            "exploits",
-            "started",
-            f"querying for {len(relevant)} service(s)",
-        )
-        start = datetime.now(UTC)
-        try:
-            vulns = await self.exploit_finder.find_for_ports(ports)
-        except Exception as exc:  # noqa: BLE001 — third-party tool may raise anything
-            self._emit(
-                "exploits",
-                "failed",
-                str(exc),
-                (datetime.now(UTC) - start).total_seconds(),
-            )
-            result.errors.append(f"exploits: {exc}")
-            return []
-        for v in vulns[:10]:
-            label = f"[{v.severity.value}] {v.title}"
-            if v.cve:
-                label += f" ({v.cve})"
-            self._emit("exploits", "info", label)
-        if len(vulns) > 10:
-            self._emit("exploits", "info", f"... and {len(vulns) - 10} more")
-        self._emit(
-            "exploits",
-            "completed",
-            f"{len(vulns)} potential vuln(s)",
-            (datetime.now(UTC) - start).total_seconds(),
-        )
-        return vulns
-
-    async def _do_ffuf(self, target: Target, result: ScanResult) -> list[WebFinding]:
-        self._emit("ffuf", "started", f"fuzzing {target.url} with {self.wordlist.name}")
-        start = datetime.now(UTC)
-        try:
-            findings = await self.ffuf.fuzz(target.url, self.wordlist)
-        except FfufError as exc:
-            self._emit(
-                "ffuf", "failed", str(exc), (datetime.now(UTC) - start).total_seconds()
-            )
-            result.errors.append(f"ffuf: {exc}")
-            return []
-        for f in findings[:20]:
-            self._emit("ffuf", "info", f"{f.status} {f.url}")
-        if len(findings) > 20:
-            self._emit("ffuf", "info", f"... and {len(findings) - 20} more")
-        self._emit(
-            "ffuf",
-            "completed",
-            f"{len(findings)} finding(s)",
-            (datetime.now(UTC) - start).total_seconds(),
-        )
-        return findings
 
     @staticmethod
     def _derive_status(result: ScanResult) -> ScanStatus:

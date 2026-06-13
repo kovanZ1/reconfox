@@ -1,18 +1,17 @@
-"""Tests for reconfox.core.orchestrator."""
+"""Tests for reconfox.core.orchestrator — the generic scanner driver."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from reconfox.core.ffuf_scanner import FfufError
 from reconfox.core.nmap_scanner import NmapError
-from reconfox.core.orchestrator import (
-    Orchestrator,
-    ProgressEvent,
-)
+from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import ResolverError
+from reconfox.core.scanner import ScanContext
 from reconfox.models import (
     ASNInfo,
     Geolocation,
@@ -23,7 +22,10 @@ from reconfox.models import (
     WebFinding,
 )
 
-# --- Fake collaborators --------------------------------------------------
+WL = Path("/tmp/wl.txt")  # noqa: S108 — never read in tests
+
+
+# --- Fake tools (wrapped by the real default_pipeline stages) ------------
 
 
 class FakeResolver:
@@ -71,7 +73,7 @@ class FakeFfuf:
         return [WebFinding(url=f"{target_url}/admin", status=200, length=10)]
 
 
-# --- Tests ---------------------------------------------------------------
+# --- Full-pipeline behavioural tests -------------------------------------
 
 
 class TestOrchestrator:
@@ -88,10 +90,8 @@ class TestOrchestrator:
         ffuf = FakeFfuf(error=ffuf_fail)
         on_progress = events.append if events is not None else None
         orch = Orchestrator(
-            resolver=resolver,  # type: ignore[arg-type]
-            nmap_scanner=nmap,  # type: ignore[arg-type]
-            ffuf_scanner=ffuf,  # type: ignore[arg-type]
-            wordlist=Path("/tmp/wl.txt"),  # noqa: S108 — wordlist is never read in tests
+            default_pipeline(resolver, nmap, ffuf),
+            WL,
             on_progress=on_progress,
         )
         return orch, resolver, nmap, ffuf
@@ -146,12 +146,10 @@ class TestOrchestrator:
         events: list[ProgressEvent] = []
         orch, _, _, _ = self._make(events=events)
         await orch.run("https://example.com", ScanMode.QUICK)
-        # at least: resolve start/end, nmap start/end, ffuf start/end
         phases = [e.phase for e in events]
         assert phases.count("resolve") >= 2
         assert phases.count("nmap") >= 2
         assert phases.count("ffuf") >= 2
-        # resolve must finish before nmap/ffuf start
         resolve_done_idx = next(
             i for i, e in enumerate(events) if e.phase == "resolve" and e.status == "completed"
         )
@@ -169,15 +167,72 @@ class TestOrchestrator:
 
 @pytest.mark.parametrize("mode", [ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH])
 async def test_all_modes_supported(mode: ScanMode) -> None:
-    resolver = FakeResolver()
-    nmap = FakeNmap()
-    ffuf = FakeFfuf()
-    orch = Orchestrator(
-        resolver=resolver,  # type: ignore[arg-type]
-        nmap_scanner=nmap,  # type: ignore[arg-type]
-        ffuf_scanner=ffuf,  # type: ignore[arg-type]
-        wordlist=Path("/tmp/wl.txt"),  # noqa: S108 — wordlist is never read in tests
-    )
+    orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
     result = await orch.run("http://example.com", mode)
     assert result.mode == mode
     assert result.status == ScanStatus.COMPLETED
+
+
+# --- Driver-level tests with synthetic stages ----------------------------
+
+
+@dataclass
+class _RecordStage:
+    """Minimal Scanner that just records when it ran."""
+
+    name: str
+    order: list[str]
+    phase: str = "nmap"
+    depends_on: tuple[str, ...] = ()
+    critical: bool = False
+    fail: bool = False
+    applies: bool = True
+
+    def applicable(self, ctx: ScanContext) -> bool:  # noqa: ARG002
+        return self.applies
+
+    async def run(self, ctx: ScanContext) -> None:  # noqa: ARG002
+        self.order.append(self.name)
+        if self.fail:
+            raise RuntimeError(f"{self.name} boom")
+
+
+class TestDriver:
+    async def test_runs_in_dependency_order(self) -> None:
+        order: list[str] = []
+        a = _RecordStage("a", order)
+        b = _RecordStage("b", order, depends_on=("a",))
+        c = _RecordStage("c", order, depends_on=("a",))
+        # list order intentionally not the run order
+        orch = Orchestrator([b, c, a], WL)
+        await orch.run("http://example.com", ScanMode.QUICK)
+        assert order[0] == "a"
+        assert set(order) == {"a", "b", "c"}
+        assert order.index("a") < order.index("b")
+        assert order.index("a") < order.index("c")
+
+    async def test_critical_failure_aborts_dependents(self) -> None:
+        order: list[str] = []
+        a = _RecordStage("a", order, critical=True, fail=True)
+        b = _RecordStage("b", order, depends_on=("a",))
+        orch = Orchestrator([a, b], WL)
+        result = await orch.run("http://example.com", ScanMode.QUICK)
+        assert "b" not in order
+        assert result.status == ScanStatus.FAILED
+
+    async def test_non_critical_failure_does_not_abort(self) -> None:
+        order: list[str] = []
+        a = _RecordStage("a", order, fail=True)  # not critical
+        b = _RecordStage("b", order)
+        orch = Orchestrator([a, b], WL)
+        result = await orch.run("http://example.com", ScanMode.QUICK)
+        assert "b" in order
+        assert result.status == ScanStatus.FAILED  # a failed, nothing collected
+
+    async def test_non_applicable_stage_skipped(self) -> None:
+        order: list[str] = []
+        a = _RecordStage("a", order, applies=False)
+        orch = Orchestrator([a], WL)
+        result = await orch.run("http://example.com", ScanMode.QUICK)
+        assert order == []
+        assert result.status == ScanStatus.COMPLETED

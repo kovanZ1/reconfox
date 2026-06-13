@@ -1,0 +1,183 @@
+"""Concrete Scanner stages — thin adapters wrapping each recon tool.
+
+Each stage owns its own progress emits (started / info / completed) and raises
+the tool's domain error on failure; the orchestrator catches it, records the
+error and decides whether to abort (for ``critical`` stages) or continue.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+
+from reconfox.core.scanner import Phase, ScanContext, Scanner
+from reconfox.models import PortInfo, ScanMode, Target, Vulnerability, WebFinding
+
+
+# Structural tool interfaces — real tools and test fakes both satisfy these.
+class ResolverProtocol(Protocol):
+    async def resolve(self, target: Target) -> Target: ...
+
+
+class NmapProtocol(Protocol):
+    async def scan(
+        self, target: str, mode: ScanMode, ports: str | None = None
+    ) -> list[PortInfo]: ...
+
+
+class FfufProtocol(Protocol):
+    async def fuzz(
+        self,
+        target_url: str,
+        wordlist: Path,
+        match_codes: list[int] | tuple[int, ...] = ...,
+        threads: int = ...,
+    ) -> list[WebFinding]: ...
+
+
+class ExploitFinderProtocol(Protocol):
+    async def find_for_ports(self, ports: list[PortInfo]) -> list[Vulnerability]: ...
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+class ResolveStage:
+    """Resolve IP and (optionally) enrich the target. Fatal if it fails."""
+
+    name = "resolve"
+    phase: Phase = "resolve"
+    depends_on: tuple[str, ...] = ()
+    critical = True
+
+    def __init__(self, resolver: ResolverProtocol) -> None:
+        self.resolver = resolver
+
+    def applicable(self, ctx: ScanContext) -> bool:  # noqa: ARG002
+        return True
+
+    async def run(self, ctx: ScanContext) -> None:
+        ctx.emit("resolve", "started", f"resolving {ctx.target.hostname}")
+        start = _now()
+        await self.resolver.resolve(ctx.target)
+        t = ctx.target
+        ctx.emit("resolve", "info", f"ip: {t.ip}")
+        if t.asn is not None and t.asn.asn:
+            asn_str = f"AS{t.asn.asn} {t.asn.asn_name or ''}".strip()
+            ctx.emit("resolve", "info", f"asn: {asn_str}")
+        if t.geo is not None and (t.geo.city or t.geo.country):
+            loc = ", ".join(filter(None, [t.geo.city, t.geo.country]))
+            ctx.emit("resolve", "info", f"location: {loc}")
+        ctx.emit("resolve", "completed", None, (_now() - start).total_seconds())
+
+
+class NmapStage:
+    """Port + service scan. Applicable only once an IP is known."""
+
+    name = "nmap"
+    phase: Phase = "nmap"
+    depends_on: tuple[str, ...] = ("resolve",)
+    critical = False
+
+    def __init__(self, scanner: NmapProtocol) -> None:
+        self.scanner = scanner
+
+    def applicable(self, ctx: ScanContext) -> bool:
+        return ctx.target.ip is not None
+
+    async def run(self, ctx: ScanContext) -> None:
+        ip = ctx.target.ip
+        ctx.emit("nmap", "started", f"scanning {ip} (mode={ctx.mode.value})")
+        start = _now()
+        ports = await self.scanner.scan(ip, ctx.mode)  # type: ignore[arg-type]
+        ctx.result.ports = ports
+        open_ports = [p for p in ports if p.state == "open"]
+        for p in sorted(open_ports, key=lambda x: x.port):
+            svc = p.service or "?"
+            ver = f"{p.product or ''} {p.version or ''}".strip()
+            tail = f" {ver}" if ver else ""
+            ctx.emit("nmap", "info", f"{p.port}/{p.protocol} open {svc}{tail}")
+        ctx.emit(
+            "nmap", "completed", f"{len(open_ports)} open port(s)", (_now() - start).total_seconds()
+        )
+
+
+class FfufStage:
+    """Web content discovery via ffuf."""
+
+    name = "ffuf"
+    phase: Phase = "ffuf"
+    depends_on: tuple[str, ...] = ("resolve",)
+    critical = False
+
+    def __init__(self, scanner: FfufProtocol) -> None:
+        self.scanner = scanner
+
+    def applicable(self, ctx: ScanContext) -> bool:  # noqa: ARG002
+        return True
+
+    async def run(self, ctx: ScanContext) -> None:
+        ctx.emit("ffuf", "started", f"fuzzing {ctx.target.url} with {ctx.wordlist.name}")
+        start = _now()
+        findings = await self.scanner.fuzz(ctx.target.url, ctx.wordlist)
+        ctx.result.web_findings = findings
+        for f in findings[:20]:
+            ctx.emit("ffuf", "info", f"{f.status} {f.url}")
+        if len(findings) > 20:
+            ctx.emit("ffuf", "info", f"... and {len(findings) - 20} more")
+        ctx.emit(
+            "ffuf", "completed", f"{len(findings)} finding(s)", (_now() - start).total_seconds()
+        )
+
+
+class ExploitStage:
+    """Exploit lookup for discovered services. Needs ports and a finder."""
+
+    name = "exploits"
+    phase: Phase = "exploits"
+    depends_on: tuple[str, ...] = ("nmap",)
+    critical = False
+
+    def __init__(self, finder: ExploitFinderProtocol | None) -> None:
+        self.finder = finder
+
+    def applicable(self, ctx: ScanContext) -> bool:
+        return self.finder is not None and bool(ctx.result.ports)
+
+    async def run(self, ctx: ScanContext) -> None:
+        assert self.finder is not None  # noqa: S101 — guaranteed by applicable()
+        relevant = [p for p in ctx.result.ports if p.product]
+        ctx.emit("exploits", "started", f"querying for {len(relevant)} service(s)")
+        start = _now()
+        vulns = await self.finder.find_for_ports(ctx.result.ports)
+        ctx.result.vulnerabilities = vulns
+        for v in vulns[:10]:
+            label = f"[{v.severity.value}] {v.title}"
+            if v.cve:
+                label += f" ({v.cve})"
+            ctx.emit("exploits", "info", label)
+        if len(vulns) > 10:
+            ctx.emit("exploits", "info", f"... and {len(vulns) - 10} more")
+        ctx.emit(
+            "exploits",
+            "completed",
+            f"{len(vulns)} potential vuln(s)",
+            (_now() - start).total_seconds(),
+        )
+
+
+def default_pipeline(
+    resolver: ResolverProtocol,
+    nmap_scanner: NmapProtocol,
+    ffuf_scanner: FfufProtocol,
+    exploit_finder: ExploitFinderProtocol | None = None,
+) -> list[Scanner]:
+    """The standard reconfox pipeline: resolve → (nmap ‖ ffuf) → exploits."""
+    return [
+        ResolveStage(resolver),
+        NmapStage(nmap_scanner),
+        FfufStage(ffuf_scanner),
+        ExploitStage(exploit_finder),
+    ]

@@ -24,6 +24,18 @@
   запрос. Переопределяется флагом `--timeout`.
 - Юнит-тесты на `core/_proc.run_capture` (успех / ненулевой код / таймаут с kill
   дочернего / отмена с kill).
+- **Unix-citizen I/O.** Флаг `--ndjson` стримит находки в stdout по одной
+  JSON-строке на запись (target → port/web/vuln → summary, со `schema_version`),
+  человекочитаемый вывод уходит в stderr — pipe-friendly. `-O -` печатает отчёт
+  выбранного формата в stdout. Цель можно подать через stdin: `reconfox scan -`.
+
+### Изменено
+- **Архитектура: Scanner Protocol + registry.** Orchestrator стал generic-движком,
+  который гоняет самоописывающиеся стадии (`Scanner`: `name`/`phase`/`depends_on`/
+  `critical`/`applicable`/`run`) по графу зависимостей, изолируя падения. nmap/ffuf/
+  resolver/exploit переехали в адаптеры (`core/stages.py`), стандартный конвейер —
+  `default_pipeline()`. Новый сканер теперь добавляется регистрацией, без правок
+  оркестратора.
 
 ## [0.2.1] — 2026-06-13
 

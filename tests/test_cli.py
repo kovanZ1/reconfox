@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,14 @@ class FakeOrchestrator:
     async def run(self, url: str, mode: ScanMode) -> ScanResult:
         self.run_calls.append((url, mode))
         return self.result
+
+
+def _result_with_ports(url: str = "https://example.com") -> ScanResult:
+    from reconfox.models import PortInfo
+
+    r = _completed_result(url)
+    r.ports = [PortInfo(port=80, protocol="tcp", state="open", service="http", product="nginx")]
+    return r
 
 
 @pytest.fixture(autouse=True)
@@ -193,3 +202,49 @@ class TestScanCommand:
             cli.main, ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui"]
         )
         assert result.exit_code == 0  # partial is treated as success-with-warnings
+
+
+class TestUnixIO:
+    def test_target_read_from_stdin(self, _patch_orchestrator: FakeOrchestrator) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "-", "--no-tui", "--ndjson"], input="https://example.com\n"
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_calls[0][0] == "https://example.com"
+
+    def test_ndjson_stdout_is_clean_jsonl(
+        self, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        _patch_orchestrator.result = _result_with_ports()
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["scan", "https://example.com", "--no-tui", "--ndjson"])
+        assert result.exit_code == 0, result.output
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        records = [json.loads(ln) for ln in lines]  # every line must be valid JSON
+        assert records[0]["type"] == "target"
+        assert records[-1]["type"] == "summary"
+        assert any(r["type"] == "port" for r in records)
+
+    def test_ndjson_writes_no_files(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(
+            cli.main, ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui", "--ndjson"]
+        )
+        assert list(tmp_path.iterdir()) == []
+
+    def test_json_report_to_stdout_dash(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "https://example.com", "--no-tui", "-f", "json", "-O", "-"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)  # pure stdout must be parseable JSON
+        assert data["target"]["hostname"] == "example.com"
+
+    def test_human_output_kept_off_stdout(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["scan", "https://example.com", "--no-tui", "--ndjson"])
+        # progress/summary chatter must go to stderr, leaving stdout pipe-clean
+        assert "status:" not in result.stdout
+        assert "status" in result.stderr.lower() or "reconfox" in result.stderr.lower()
