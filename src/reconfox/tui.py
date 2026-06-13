@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
@@ -47,7 +47,6 @@ DEFAULT_WORDLIST = Path("/usr/share/wordlists/dirb/common.txt")
 
 _BANNER_FILE = Path(__file__).parent / "assets" / "banner.txt"
 _PHASES = ("resolve", "nmap", "ffuf", "exploits")
-_BAR_WIDTH = 40
 _MODE_CYCLE = (ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH)
 _FMT_CYCLE = (ReportFormat.MARKDOWN, ReportFormat.HTML, ReportFormat.JSON)
 _FMT_NAMES = {
@@ -94,15 +93,9 @@ class ReconFoxApp(App[None]):
     CSS = """
     Screen { background: #0a0d0b; }
 
-    #banner-row { height: 8; padding: 1 2 0 2; }
+    #banner-row { height: 9; align: center top; padding: 1 0 0 0; }
     #banner { width: auto; color: #2ee66a; }
-    #tagline {
-        width: 1fr;
-        height: 8;
-        color: #ffb000;
-        content-align: right bottom;
-        padding: 0 1 1 0;
-    }
+    #tagline { width: auto; color: #ffb000; text-align: center; }
 
     .row { height: 3; margin: 0 2; }
     .row > Label {
@@ -183,9 +176,9 @@ class ReconFoxApp(App[None]):
     # --- compose ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="banner-row"):
+        with Vertical(id="banner-row"):
             yield Static(_load_banner(), id="banner")
-            yield Static("v0.2 // recon toolkit", id="tagline")
+            yield Static("v0.2 // recon toolkit  ·  authorized testing only", id="tagline")
 
         with Horizontal(id="target-row", classes="row"):
             yield Label("> target")
@@ -408,24 +401,37 @@ class ReconFoxApp(App[None]):
             self._phase_timer.stop()
             self._phase_timer = None
 
+    def _bar_width(self) -> int:
+        """Bar width = terminal width minus label(9) + pct(4) + spacing/padding."""
+        try:
+            avail = self.query_one("#phases-body", Static).content_size.width
+        except Exception:  # noqa: BLE001 — not mounted yet
+            avail = 0
+        if avail <= 0:
+            avail = max(40, self.size.width - 6)
+        return max(20, avail - 9 - 1 - 4 - 2)
+
+    def on_resize(self, event: Any) -> None:  # noqa: ARG002
+        self._render_phases()
+
     def _render_phases(self) -> None:
+        bar_w = self._bar_width()
         self.query_one("#phases-body", Static).update(
-            "\n".join(self._phase_line(p) for p in _PHASES)
+            "\n".join(self._phase_line(p, bar_w) for p in _PHASES)
         )
 
-    def _phase_line(self, name: str) -> str:
+    def _phase_line(self, name: str, bar_w: int) -> str:
         st = self._phases[name]
-        state, frac, dur = st["state"], st["frac"], st["dur"]
+        state, frac = st["state"], st["frac"]
         if state == "done":
-            pct, col, fill = 100, "#2ee66a", _BAR_WIDTH
+            pct, col, fill = 100, "#2ee66a", bar_w
         elif state == "fail":
-            pct, col, fill = 100, "#ff5555", _BAR_WIDTH
+            pct, col, fill = 100, "#ff5555", bar_w
         elif state == "running":
-            pct, col, fill = int(frac * 100), "#d99e00", max(1, int(frac * _BAR_WIDTH))
+            pct, col, fill = int(frac * 100), "#d99e00", max(1, int(frac * bar_w))
         else:
             pct, col, fill = 0, "#4a5a4a", 0
-        bar = f"[{col}]{'█' * fill}[/][#18241c]{'█' * (_BAR_WIDTH - fill)}[/]"
-        _ = dur
+        bar = f"[{col}]{'█' * fill}[/][#18241c]{'█' * (bar_w - fill)}[/]"
         return f"[{col}]{name:<9}[/] [{col}]{pct:>3}%[/]  {bar}"
 
     # --- log / findings --------------------------------------------------
