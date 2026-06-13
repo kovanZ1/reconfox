@@ -13,6 +13,7 @@ Matches the project's design reference:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -367,7 +368,15 @@ class ReconFoxApp(App[None]):
     # --- progress / phases ----------------------------------------------
 
     def _on_progress(self, event: ProgressEvent) -> None:
-        self.call_from_thread(self._apply_progress, event)
+        # The scan worker is an asyncio task on the app's event loop, so the
+        # orchestrator invokes this on the UI thread — update widgets directly.
+        # call_from_thread() RAISES when used on the app thread (and the
+        # orchestrator swallows that), which silently dropped every update.
+        app_thread = getattr(self, "_thread_id", None)
+        if app_thread is None or threading.get_ident() == app_thread:
+            self._apply_progress(event)
+        else:
+            self.call_from_thread(self._apply_progress, event)
 
     def _apply_progress(self, event: ProgressEvent) -> None:
         phase = event.phase

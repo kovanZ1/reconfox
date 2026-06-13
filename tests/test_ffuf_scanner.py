@@ -86,7 +86,8 @@ class TestBuildArgs:
     def test_appends_fuzz_when_missing(self, tmp_path: Path) -> None:
         wl = tmp_path / "common.txt"
         wl.write_text("admin\nlogin\n")
-        args = FfufScanner.build_args("http://target", wl, match_codes=[200, 403])
+        out = tmp_path / "out.json"
+        args = FfufScanner.build_args("http://target", wl, out, match_codes=[200, 403])
         assert "-u" in args
         idx = args.index("-u")
         assert args[idx + 1] == "http://target/FUZZ"
@@ -99,33 +100,37 @@ class TestBuildArgs:
     def test_keeps_existing_fuzz_marker(self, tmp_path: Path) -> None:
         wl = tmp_path / "x.txt"
         wl.write_text("a\n")
+        out = tmp_path / "out.json"
         args = FfufScanner.build_args(
-            "http://target/api/FUZZ/users", wl, match_codes=[200]
+            "http://target/api/FUZZ/users", wl, out, match_codes=[200]
         )
         idx = args.index("-u")
         assert args[idx + 1] == "http://target/api/FUZZ/users"
 
-    def test_uses_json_output_to_stdout(self, tmp_path: Path) -> None:
+    def test_writes_json_to_output_file(self, tmp_path: Path) -> None:
         wl = tmp_path / "x.txt"
         wl.write_text("a\n")
-        args = FfufScanner.build_args("http://target", wl, match_codes=[200])
+        out = tmp_path / "out.json"
+        args = FfufScanner.build_args("http://target", wl, out, match_codes=[200])
         assert "-of" in args
         assert "json" in args
         assert "-o" in args
         idx = args.index("-o")
-        assert args[idx + 1] == "/dev/stdout"
+        assert args[idx + 1] == str(out)
 
     def test_silences_progress(self, tmp_path: Path) -> None:
         wl = tmp_path / "x.txt"
         wl.write_text("a\n")
-        args = FfufScanner.build_args("http://target", wl, match_codes=[200])
+        out = tmp_path / "out.json"
+        args = FfufScanner.build_args("http://target", wl, out, match_codes=[200])
         assert "-s" in args  # silent
 
     def test_threads_flag(self, tmp_path: Path) -> None:
         wl = tmp_path / "x.txt"
         wl.write_text("a\n")
+        out = tmp_path / "out.json"
         args = FfufScanner.build_args(
-            "http://target", wl, match_codes=[200], threads=80
+            "http://target", wl, out, match_codes=[200], threads=80
         )
         idx = args.index("-t")
         assert args[idx + 1] == "80"
@@ -133,8 +138,21 @@ class TestBuildArgs:
     def test_wordlist_missing_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FfufError, match="wordlist"):
             FfufScanner.build_args(
-                "http://target", tmp_path / "missing.txt", match_codes=[200]
+                "http://target", tmp_path / "missing.txt",
+                tmp_path / "out.json", match_codes=[200],
             )
+
+
+def _writes_output(payload: str):
+    """Build a fake create_subprocess_exec that writes `payload` to ffuf's -o file."""
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
+        flags = list(args[1:])  # args[0] is the binary
+        opath = flags[flags.index("-o") + 1]
+        Path(opath).write_text(payload, encoding="utf-8")  # noqa: ASYNC240
+        return _FakeProcess(stdout=b"", stderr=b"", returncode=0)
+
+    return fake_exec
 
 
 class TestFuzz:
@@ -143,14 +161,20 @@ class TestFuzz:
     ) -> None:
         wl = tmp_path / "wl.txt"
         wl.write_text("admin\n")
-
-        async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
-            return _FakeProcess(stdout=SAMPLE_OUTPUT.encode(), stderr=b"", returncode=0)
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _writes_output(SAMPLE_OUTPUT))
         scanner = FfufScanner()
         findings = await scanner.fuzz("http://target", wl)
         assert len(findings) == 3
+
+    async def test_fuzz_empty_output_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ffuf sometimes writes nothing (no matches / blocked) — treat as 0 findings."""
+        wl = tmp_path / "wl.txt"
+        wl.write_text("admin\n")
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _writes_output(""))
+        scanner = FfufScanner()
+        assert await scanner.fuzz("http://target", wl) == []
 
     async def test_fuzz_raises_on_nonzero(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -1,9 +1,17 @@
-"""Async wrapper around ffuf for directory and content discovery."""
+"""Async wrapper around ffuf for directory and content discovery.
+
+ffuf writes its JSON report to a real file (``-o``); we read it back afterwards.
+Writing to a temp file instead of ``/dev/stdout`` avoids ffuf's silent-mode and
+buffering quirks that produced empty / unparseable stdout on some targets.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from reconfox.models import WebFinding
@@ -25,6 +33,7 @@ class FfufScanner:
     def build_args(
         target_url: str,
         wordlist: Path,
+        output_file: Path,
         match_codes: list[int] | tuple[int, ...] = DEFAULT_MATCH_CODES,
         threads: int = DEFAULT_THREADS,
     ) -> list[str]:
@@ -32,18 +41,12 @@ class FfufScanner:
             raise FfufError(f"wordlist not found: {wordlist}")
         url = target_url if "FUZZ" in target_url else target_url.rstrip("/") + "/FUZZ"
         return [
-            "-u",
-            url,
-            "-w",
-            str(wordlist),
-            "-mc",
-            ",".join(str(c) for c in match_codes),
-            "-t",
-            str(threads),
-            "-of",
-            "json",
-            "-o",
-            "/dev/stdout",
+            "-u", url,
+            "-w", str(wordlist),
+            "-mc", ",".join(str(c) for c in match_codes),
+            "-t", str(threads),
+            "-of", "json",
+            "-o", str(output_file),
             "-s",
         ]
 
@@ -54,21 +57,34 @@ class FfufScanner:
         match_codes: list[int] | tuple[int, ...] = DEFAULT_MATCH_CODES,
         threads: int = DEFAULT_THREADS,
     ) -> list[WebFinding]:
-        args = self.build_args(target_url, wordlist, match_codes, threads)
-        proc = await asyncio.create_subprocess_exec(
-            self.binary,
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip() or "unknown ffuf error"
-            raise FfufError(f"ffuf exited with code {proc.returncode}: {err}")
-        return self.parse_json(stdout.decode(errors="replace"))
+        fd, tmp_name = tempfile.mkstemp(prefix="reconfox_ffuf_", suffix=".json")
+        os.close(fd)
+        out_path = Path(tmp_name)
+        try:
+            args = self.build_args(target_url, wordlist, out_path, match_codes, threads)
+            proc = await asyncio.create_subprocess_exec(
+                self.binary,
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = stderr.decode(errors="replace").strip() or "unknown ffuf error"
+                raise FfufError(f"ffuf exited with code {proc.returncode}: {err}")
+            raw = await asyncio.to_thread(
+                out_path.read_text, encoding="utf-8", errors="replace"
+            )
+            return self.parse_json(raw)
+        finally:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(out_path.unlink)
 
     @staticmethod
     def parse_json(output: str) -> list[WebFinding]:
+        # ffuf can legitimately produce an empty file (no matches / blocked target).
+        if not output.strip():
+            return []
         try:
             data = json.loads(output)
         except json.JSONDecodeError as exc:

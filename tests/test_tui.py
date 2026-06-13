@@ -116,6 +116,41 @@ async def test_start_without_url_shows_error(app: ReconFoxApp) -> None:
         assert "url" in text or "error" in text
 
 
+class ProgressOrchestrator:
+    """Fake orchestrator that emits real ProgressEvents to exercise phase bars."""
+
+    def __init__(self, on_progress) -> None:  # noqa: ANN001
+        self.on_progress = on_progress
+
+    async def run(self, url: str, mode: ScanMode) -> ScanResult:  # noqa: ARG002
+        from reconfox.core.orchestrator import ProgressEvent
+
+        self.on_progress(ProgressEvent(phase="resolve", status="started"))
+        self.on_progress(ProgressEvent(phase="resolve", status="completed", duration_seconds=0.4))
+        self.on_progress(ProgressEvent(phase="nmap", status="started"))
+        self.on_progress(ProgressEvent(phase="ffuf", status="failed", message="boom"))
+        return _completed_result()
+
+
+async def test_progress_events_update_phase_bars(tmp_path: Path) -> None:
+    """Regression: progress callback must update phase state (was lost via
+    call_from_thread raising on the app's own loop thread)."""
+
+    def factory(on_progress=None, **kwargs):  # noqa: ANN001, ARG001
+        return ProgressOrchestrator(on_progress)
+
+    app = ReconFoxApp(orchestrator_factory=factory, wordlist=tmp_path / "wl.txt")
+    async with app.run_test() as pilot:
+        app.query_one("#url-input").value = "https://example.com"
+        app.output_path = str(tmp_path / "out.md")
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._phases["resolve"]["state"] == "done"
+        assert app._phases["ffuf"]["state"] == "fail"
+
+
 async def test_full_scan_run_completes(app: ReconFoxApp, tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         app.query_one("#url-input").value = "https://example.com"
