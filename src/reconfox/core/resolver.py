@@ -46,16 +46,35 @@ async def default_dns_resolver(hostname: str) -> str:
 
 
 class Resolver:
-    """Enrich a Target with IP, ASN and Geolocation."""
+    """Resolve a Target's IP, and — only when explicitly enabled — enrich it with
+    ASN and Geolocation from ip-api.com.
+
+    OPSEC: ip-api.com is a third party reached over plaintext HTTP, so it would
+    leak the engagement target. Enrichment is therefore **off by default**; pass
+    ``enrich=True`` to opt in, and ``proxy=`` to route that traffic. DNS
+    resolution (needed to get an IP for nmap) always runs locally.
+    """
 
     def __init__(
         self,
         http_client: httpx.AsyncClient | None = None,
         dns_resolver: DnsResolver = default_dns_resolver,
+        enrich: bool = False,
+        proxy: str | None = None,
     ) -> None:
-        self._http = http_client or httpx.AsyncClient(timeout=IP_API_TIMEOUT)
-        self._owns_http = http_client is None
+        self.enrich = enrich
+        self._proxy = proxy
         self._dns_resolver = dns_resolver
+        if http_client is not None:
+            self._http: httpx.AsyncClient | None = http_client
+            self._owns_http = False
+        elif enrich:
+            self._http = httpx.AsyncClient(timeout=IP_API_TIMEOUT, proxy=proxy)
+            self._owns_http = True
+        else:
+            # No enrichment → no HTTP client at all, so no accidental traffic.
+            self._http = None
+            self._owns_http = False
 
     async def __aenter__(self) -> Self:
         return self
@@ -66,14 +85,15 @@ class Resolver:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if self._owns_http:
+        if self._owns_http and self._http is not None:
             await self._http.aclose()
 
     async def resolve(self, target: Target) -> Target:
         target.ip = await self._resolve_ip(target.hostname)
-        geo, asn = await self._fetch_ip_meta(target.ip)
-        target.geo = geo
-        target.asn = asn
+        if self.enrich and self._http is not None and target.ip is not None:
+            geo, asn = await self._fetch_ip_meta(target.ip)
+            target.geo = geo
+            target.asn = asn
         return target
 
     async def _resolve_ip(self, hostname: str) -> str:

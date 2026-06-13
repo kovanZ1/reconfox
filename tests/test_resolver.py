@@ -45,7 +45,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(200, json=IP_API_SUCCESS)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.ip == "93.184.216.34"
 
@@ -55,7 +55,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/1.1.1.1").mock(
                 return_value=httpx.Response(200, json=IP_API_SUCCESS)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_fail)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_fail, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.ip == "1.1.1.1"
 
@@ -65,7 +65,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(200, json=IP_API_SUCCESS)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.geo is not None
         assert enriched.geo.country == "United States"
@@ -79,7 +79,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(200, json=IP_API_SUCCESS)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.asn is not None
         assert enriched.asn.asn == 13335
@@ -90,7 +90,7 @@ class TestResolver:
     async def test_dns_failure_raises(self) -> None:
         target = Target.from_url("https://nonexistent.invalid")
         async with httpx.AsyncClient() as client:
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_fail)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_fail, enrich=True)
             with pytest.raises(ResolverError, match="DNS"):
                 await resolver.resolve(target)
 
@@ -101,7 +101,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(200, json=IP_API_FAILURE)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.ip == "93.184.216.34"
         assert enriched.geo is None
@@ -113,7 +113,7 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(500)
             )
-            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok)
+            resolver = Resolver(http_client=client, dns_resolver=_fake_dns_ok, enrich=True)
             enriched = await resolver.resolve(target)
         assert enriched.ip == "93.184.216.34"
         assert enriched.geo is None
@@ -124,6 +124,33 @@ class TestResolver:
             respx.get("http://ip-api.com/json/93.184.216.34").mock(
                 return_value=httpx.Response(200, json=IP_API_SUCCESS)
             )
+            async with Resolver(dns_resolver=_fake_dns_ok, enrich=True) as resolver:
+                enriched = await resolver.resolve(target)
+        assert enriched.ip == "93.184.216.34"
+
+    async def test_no_enrichment_by_default_is_opsec_safe(self) -> None:
+        """Default: no third-party ip-api call, no geo/asn — but IP still resolved."""
+        target = Target.from_url("https://example.com")
+        with respx.mock:
+            route = respx.get("http://ip-api.com/json/93.184.216.34").mock(
+                return_value=httpx.Response(200, json=IP_API_SUCCESS)
+            )
             async with Resolver(dns_resolver=_fake_dns_ok) as resolver:
                 enriched = await resolver.resolve(target)
         assert enriched.ip == "93.184.216.34"
+        assert enriched.geo is None
+        assert enriched.asn is None
+        assert route.called is False
+
+    async def test_no_http_client_created_when_not_enriching(self) -> None:
+        """Without enrichment no HTTP client is created at all (no accidental traffic)."""
+        resolver = Resolver(enrich=False)
+        assert resolver._http is None
+
+    async def test_proxy_is_stored_for_enrichment(self) -> None:
+        resolver = Resolver(enrich=True, proxy="http://127.0.0.1:8080")
+        try:
+            assert resolver._proxy == "http://127.0.0.1:8080"
+            assert resolver._http is not None
+        finally:
+            await resolver._http.aclose()
