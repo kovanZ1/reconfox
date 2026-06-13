@@ -30,15 +30,18 @@ def build_orchestrator(
     ffuf_binary: str,
     use_metasploit: bool = False,
     on_progress: object | None = None,
+    enrich: bool = False,
+    proxy: str | None = None,
+    timeout: float | None = None,
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
     finder: ExploitFinder | MetasploitFinder = (
-        MetasploitFinder() if use_metasploit else ExploitFinder()
+        MetasploitFinder() if use_metasploit else ExploitFinder(timeout=timeout)
     )
     return Orchestrator(
-        resolver=Resolver(),
-        nmap_scanner=NmapScanner(binary=nmap_binary),
-        ffuf_scanner=FfufScanner(binary=ffuf_binary),
+        resolver=Resolver(enrich=enrich, proxy=proxy),
+        nmap_scanner=NmapScanner(binary=nmap_binary, timeout=timeout),
+        ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout),
         exploit_finder=finder,
         wordlist=wordlist,
         on_progress=on_progress,  # type: ignore[arg-type]
@@ -119,6 +122,24 @@ def main(ctx: click.Context) -> None:
     help="Использовать Metasploit RPC (msfrpcd) вместо searchsploit.",
 )
 @click.option(
+    "--enrich",
+    is_flag=True,
+    help="Обогащать гео/ASN через ip-api.com. По умолчанию ВЫКЛ (OPSEC: "
+    "иначе IP цели уходит третьей стороне открытым текстом).",
+)
+@click.option(
+    "--proxy",
+    default=None,
+    help="Проксировать исходящий HTTP (обогащение ip-api) через URL прокси.",
+)
+@click.option(
+    "--timeout",
+    "timeout",
+    type=float,
+    default=None,
+    help="Таймаут на один сканер, секунды. По умолчанию зависит от режима.",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -135,6 +156,9 @@ def scan(
     nmap_binary: str,
     ffuf_binary: str,
     metasploit: bool,
+    enrich: bool,
+    proxy: str | None,
+    timeout: float | None,
     verbose: bool,
     no_tui: bool,  # noqa: ARG001 — CLI flag for symmetry with TUI mode
 ) -> None:
@@ -148,6 +172,9 @@ def scan(
         ffuf_binary=ffuf_binary,
         use_metasploit=metasploit,
         on_progress=progress_cb,
+        enrich=enrich,
+        proxy=proxy,
+        timeout=timeout,
     )
 
     _banner(url, scan_mode)
