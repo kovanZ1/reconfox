@@ -6,11 +6,11 @@ asyncio.create_subprocess_exec, and parses the XML output into PortInfo objects.
 
 from __future__ import annotations
 
-import asyncio
 from xml.etree.ElementTree import ParseError
 
 from defusedxml import ElementTree as DET  # type: ignore[import-untyped]
 
+from reconfox.core._proc import run_capture
 from reconfox.models import PortInfo, ScanMode
 
 
@@ -49,16 +49,10 @@ class NmapScanner:
         ports: str | None = None,
     ) -> list[PortInfo]:
         args = self.build_args(target, mode, ports)
-        proc = await asyncio.create_subprocess_exec(
-            self.binary,
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        rc, stdout, stderr = await run_capture(self.binary, *args)
+        if rc != 0:
             err = stderr.decode(errors="replace").strip() or "unknown nmap error"
-            raise NmapError(f"nmap exited with code {proc.returncode}: {err}")
+            raise NmapError(f"nmap exited with code {rc}: {err}")
         return self.parse_xml(stdout.decode(errors="replace"))
 
     @staticmethod

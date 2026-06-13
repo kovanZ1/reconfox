@@ -134,6 +134,19 @@ class TestScanIntegration:
         await scanner.scan("1.1.1.1", ScanMode.QUICK)
         assert captured[0][0] == "/usr/local/bin/nmap"
 
+    async def test_scan_kills_process_on_cancel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Aborting a scan must kill the running nmap child, not orphan it."""
+        proc = _CancellingProcess()
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _CancellingProcess:  # noqa: ARG001
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        scanner = NmapScanner()
+        with pytest.raises(asyncio.CancelledError):
+            await scanner.scan("1.1.1.1", ScanMode.FULL)
+        assert proc.killed is True
+
 
 class _FakeProcess:
     """Minimal asyncio.subprocess.Process stand-in."""
@@ -145,3 +158,20 @@ class _FakeProcess:
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return self._stdout, self._stderr
+
+
+class _CancellingProcess:
+    """Process whose communicate() is cancelled mid-flight."""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.returncode: int | None = None
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return 0

@@ -14,6 +14,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from reconfox.core._proc import run_capture
 from reconfox.models import WebFinding
 
 
@@ -62,16 +63,10 @@ class FfufScanner:
         out_path = Path(tmp_name)
         try:
             args = self.build_args(target_url, wordlist, out_path, match_codes, threads)
-            proc = await asyncio.create_subprocess_exec(
-                self.binary,
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
+            rc, _, stderr = await run_capture(self.binary, *args)
+            if rc != 0:
                 err = stderr.decode(errors="replace").strip() or "unknown ffuf error"
-                raise FfufError(f"ffuf exited with code {proc.returncode}: {err}")
+                raise FfufError(f"ffuf exited with code {rc}: {err}")
             raw = await asyncio.to_thread(
                 out_path.read_text, encoding="utf-8", errors="replace"
             )
