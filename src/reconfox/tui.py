@@ -1,14 +1,13 @@
 """reconfox Textual TUI — hacker-style single screen.
 
-Layout (top → bottom):
-  ╭─ banner (ANSI-shadow logo + amber tagline)
-  ├─ target row: URL input
-  ├─ output row: path input
-  ├─ opts row: mode / format cycle-buttons + msf toggle
-  ├─ action row: run / abort / clear / quit
-  ├─ PHASES: 4 colored progress bars (resolve / nmap / ffuf / exploits)
-  ├─ LIVE LOG: coloured stream of every step
-  ├─ FINDINGS: table of open ports / services
+Matches the project's design reference:
+  ╭─ banner: larry3d "reconfox" logo (green) + amber tagline
+  ├─ target / output inputs
+  ├─ opts: mode / format cycle-buttons + [ ] msf toggle
+  ├─ actions: ▶ RUN / ■ ABORT / CLEAR / × QUIT
+  ├─ PHASES PANEL: label + percent + thick colored bar
+  ├─ LIVE LOG: rounded green box (border-title) with coloured stream
+  ├─ FINDINGS TABLE: rounded green box, pipe-separated columns
   ╰─ status bar
 """
 
@@ -23,7 +22,6 @@ from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
-    DataTable,
     Footer,
     Input,
     Label,
@@ -32,7 +30,7 @@ from textual.widgets import (
 )
 
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent
-from reconfox.models import ScanMode, ScanResult, ScanStatus
+from reconfox.models import PortInfo, ScanMode, ScanResult, ScanStatus
 from reconfox.reporting import (
     ReportFormat,
     default_filename,
@@ -48,9 +46,17 @@ DEFAULT_WORDLIST = Path("/usr/share/wordlists/dirb/common.txt")
 
 _BANNER_FILE = Path(__file__).parent / "assets" / "banner.txt"
 _PHASES = ("resolve", "nmap", "ffuf", "exploits")
-_BAR_WIDTH = 34
+_BAR_WIDTH = 40
 _MODE_CYCLE = (ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH)
 _FMT_CYCLE = (ReportFormat.MARKDOWN, ReportFormat.HTML, ReportFormat.JSON)
+_FMT_NAMES = {
+    ReportFormat.MARKDOWN: "markdown",
+    ReportFormat.HTML: "html",
+    ReportFormat.JSON: "json",
+}
+
+# Findings table column widths (chars).
+_COLS = (("PORT", 5), ("PROTO", 6), ("SERVICE", 9), ("PRODUCT", 14), ("VERSION", 10))
 
 
 def _load_banner() -> str:
@@ -58,115 +64,92 @@ def _load_banner() -> str:
         art = _BANNER_FILE.read_text(encoding="utf-8").rstrip("\n")
     except OSError:
         art = "  reconfox"
-    tagline = (
-        "[#ffb000]        v0.2 // recon toolkit[/]"
-        "  [#5a5a5a]· authorized testing only[/]"
-    )
-    return f"[bold #00ff5f]{art}[/]\n{tagline}"
+    return f"[bold #2ee66a]{art}[/]"
+
+
+def format_findings_table(ports: list[PortInfo]) -> str:
+    """Render an aligned, pipe-separated findings table with rich markup."""
+    header = " [#5fb98f]" + "[/] | [#5fb98f]".join(
+        name.ljust(w) for name, w in _COLS
+    ) + "[/]"
+    if not ports:
+        return header + "\n [#3a4a40]— no open ports yet —[/]"
+    lines = [header]
+    for p in sorted(ports, key=lambda x: x.port):
+        cells = [
+            str(p.port).ljust(_COLS[0][1]),
+            p.protocol.ljust(_COLS[1][1]),
+            (p.service or "—").ljust(_COLS[2][1]),
+            (p.product or "—").ljust(_COLS[3][1]),
+            (p.version or "—").ljust(_COLS[4][1]),
+        ]
+        lines.append(" [#d7ffd7]" + "[/] [#3a4a40]|[/] [#d7ffd7]".join(cells) + "[/]")
+    return "\n".join(lines)
 
 
 class ReconFoxApp(App[None]):
     """Hacker-style one-screen reconfox TUI."""
 
     CSS = """
-    Screen {
-        background: #0b0d0e;
-    }
-    #banner {
+    Screen { background: #0a0d0b; }
+
+    #banner-row { height: 8; padding: 1 2 0 2; }
+    #banner { width: auto; color: #2ee66a; }
+    #tagline {
+        width: 1fr;
         height: 8;
-        padding: 1 2 0 2;
+        color: #ffb000;
+        content-align: right bottom;
+        padding: 0 1 1 0;
     }
-    .row {
-        height: 3;
-        margin: 0 2;
-    }
+
+    .row { height: 3; margin: 0 2; }
     .row > Label {
-        width: 10;
-        color: #00ff5f;
-        content-align: left middle;
-        height: 3;
-        padding: 1 0 0 0;
+        width: 10; height: 3; padding: 1 0 0 0;
+        color: #2ee66a; content-align: left middle;
     }
     .row Input {
-        width: 1fr;
-        background: #11161a;
-        color: #d7ffd7;
-        border: tall #1a2a1f;
+        width: 1fr; background: #0d1410; color: #d7ffd7;
+        border: round #163a22;
     }
-    .row Input:focus {
-        border: tall #00ff5f;
-    }
-    /* opt cycle-buttons */
+    .row Input:focus { border: round #2ee66a; }
+
     .opt-btn {
-        height: 3;
-        min-width: 20;
-        margin: 0 1 0 0;
-        background: #11161a;
-        color: #00ff5f;
-        border: tall #1a2a1f;
-        text-style: bold;
+        height: 3; min-width: 22; margin: 0 1 0 0;
+        background: #0d1410; color: #2ee66a;
+        border: round #1f5a33; text-style: bold;
     }
-    .opt-btn:hover { border: tall #00ff5f; }
-    .opt-btn.-on {
-        color: #0b0d0e;
-        background: #00ff5f;
-        border: tall #00ff5f;
-    }
+    .opt-btn:hover { border: round #2ee66a; }
+    .opt-btn.-on { color: #0a0d0b; background: #2ee66a; border: round #2ee66a; }
     #opts-gap { width: 1fr; height: 3; }
-    /* action buttons */
-    #actions {
-        height: 3;
-        margin: 1 2 0 2;
-    }
+
+    #actions { height: 3; margin: 1 2 0 2; }
     #actions Button {
-        margin: 0 1 0 0;
-        min-width: 16;
-        background: #11161a;
-        color: #00ff5f;
-        border: tall #1a2a1f;
-        text-style: bold;
+        margin: 0 2 0 0; min-width: 16;
+        background: #0d1410; border: round #1f5a33; text-style: bold;
     }
-    #start-btn { color: #00ff5f; border: tall #00ff5f; }
-    #stop-btn  { color: #ffb000; border: tall #ffb000; }
-    #quit-btn  { color: #ff4040; border: tall #ff4040; }
-    #actions Button:disabled { color: #3a3f3a; border: tall #1a2a1f; text-style: none; }
-    .section-title {
-        height: 1;
-        padding: 0 2;
-        color: #ffb000;
-        text-style: bold;
-        margin: 1 0 0 0;
+    #start-btn { color: #2ee66a; border: round #2ee66a; }
+    #stop-btn  { color: #0a0d0b; background: #d99e00; border: round #d99e00; }
+    #clear-btn { color: #6a7a70; border: round #2a3a30; }
+    #quit-btn  { color: #ff5555; border: round #ff5555; }
+    #actions Button:disabled {
+        color: #3a4a40; background: #0d1410; border: round #18241c; text-style: none;
     }
-    #phases-body {
-        height: 4;
-        padding: 0 2;
-        background: #07090a;
-    }
+
+    .section-title { height: 1; padding: 0 2; color: #4a8a64; text-style: bold; margin: 1 0 0 0; }
+    #phases-body { height: 4; padding: 0 3; background: #0a0d0b; }
+
     #log {
-        border: round #1f3a23;
-        background: #07090a;
-        color: #c5e8c5;
-        height: 1fr;
-        min-height: 8;
-        margin: 0 2;
+        border: round #2ee66a; border-title-color: #2ee66a; border-title-align: left;
+        background: #060906; color: #c5e8c5; height: 1fr; min-height: 8; margin: 0 2;
+        padding: 0 1;
     }
     #findings {
-        border: round #1f3a23;
-        background: #07090a;
-        height: 8;
-        margin: 0 2;
-    }
-    #findings > .datatable--header {
-        background: #11161a;
-        color: #00ff5f;
-        text-style: bold;
+        border: round #2ee66a; border-title-color: #2ee66a; border-title-align: left;
+        background: #060906; height: 9; margin: 0 2; padding: 0 1;
     }
     #status-bar {
-        dock: bottom;
-        padding: 0 2;
-        height: 1;
-        background: #07090a;
-        color: #5a5a5a;
+        dock: bottom; padding: 0 2; height: 1; background: #060906; color: #5a6a5a;
     }
     """
 
@@ -191,7 +174,6 @@ class ReconFoxApp(App[None]):
         self._factory = orchestrator_factory
         self._wordlist = wordlist
         self._scan_worker: Worker[None] | None = None
-        # phase -> {"state": str, "frac": float, "dur": float|None}
         self._phases: dict[str, dict[str, Any]] = {
             p: {"state": "idle", "frac": 0.0, "dur": None} for p in _PHASES
         }
@@ -200,7 +182,9 @@ class ReconFoxApp(App[None]):
     # --- compose ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Static(_load_banner(), id="banner")
+        with Horizontal(id="banner-row"):
+            yield Static(_load_banner(), id="banner")
+            yield Static("v0.2 // recon toolkit", id="tagline")
 
         with Horizontal(id="target-row", classes="row"):
             yield Label("> target")
@@ -208,10 +192,7 @@ class ReconFoxApp(App[None]):
 
         with Horizontal(id="output-row", classes="row"):
             yield Label("> output")
-            yield Input(
-                placeholder="./reports/report.md   (blank → auto-name)",
-                id="output-input",
-            )
+            yield Input(placeholder="reports/scan.md   (blank → auto)", id="output-input")
 
         with Horizontal(id="opts-row", classes="row"):
             yield Label("> opts")
@@ -224,16 +205,18 @@ class ReconFoxApp(App[None]):
             yield Button("▶  RUN  ^R", id="start-btn")
             yield Button("■  ABORT", id="stop-btn", disabled=True)
             yield Button("CLEAR  ^L", id="clear-btn")
-            yield Button("✕  QUIT  ^C", id="quit-btn")
+            yield Button("×  QUIT  ^C", id="quit-btn")
 
-        yield Static("══ PHASES ══════════════════", classes="section-title")
+        yield Static(self._title_rule("PHASES PANEL"), classes="section-title")
         yield Static(id="phases-body")
 
-        yield Static("══ LIVE LOG ════════════════", classes="section-title")
-        yield RichLog(id="log", markup=True, wrap=False, max_lines=2000)
+        log = RichLog(id="log", markup=True, wrap=False, max_lines=2000)
+        log.border_title = "LIVE LOG"
+        yield log
 
-        yield Static("══ FINDINGS ════════════════", classes="section-title")
-        yield DataTable(id="findings")
+        findings = Static(format_findings_table([]), id="findings")
+        findings.border_title = "FINDINGS TABLE"
+        yield findings
 
         yield Static(self._idle_status(), id="status-bar")
         yield Footer()
@@ -241,24 +224,26 @@ class ReconFoxApp(App[None]):
     def on_mount(self) -> None:
         self.title = "reconfox"
         self.sub_title = "authorized recon"
-        table = self.query_one("#findings", DataTable)
-        table.add_columns("port", "proto", "service", "product", "version")
         self._render_phases()
 
-    # --- option labels ---------------------------------------------------
+    # --- small renderers -------------------------------------------------
+
+    @staticmethod
+    def _title_rule(title: str) -> str:
+        return f"── {title} " + "─" * max(0, 40 - len(title))
 
     def _mode_label(self) -> str:
-        return f"mode: {self.mode.value} ▾"
+        return f"mode: {self.mode.value} ▼"
 
     def _fmt_label(self) -> str:
-        return f"fmt: {self.fmt.value} ▾"
+        return f"format: {_FMT_NAMES[self.fmt]} ▼"
 
     def _msf_label(self) -> str:
-        return f"msf: {'ON' if self.use_metasploit else 'off'}"
+        return "[x] msf" if self.use_metasploit else "[ ] msf"
 
     @staticmethod
     def _idle_status() -> str:
-        return "[#5a5a5a]ready  ·  ^R run   ^L clear   ^C quit[/]"
+        return "[#5a6a5a]ready  ·  ^R run   ^L clear   ^C quit[/]"
 
     # --- input handlers --------------------------------------------------
 
@@ -286,13 +271,11 @@ class ReconFoxApp(App[None]):
             self.exit()
 
     def _cycle_mode(self) -> None:
-        idx = (_MODE_CYCLE.index(self.mode) + 1) % len(_MODE_CYCLE)
-        self.mode = _MODE_CYCLE[idx]
+        self.mode = _MODE_CYCLE[(_MODE_CYCLE.index(self.mode) + 1) % len(_MODE_CYCLE)]
         self.query_one("#mode-btn", Button).label = self._mode_label()
 
     def _cycle_fmt(self) -> None:
-        idx = (_FMT_CYCLE.index(self.fmt) + 1) % len(_FMT_CYCLE)
-        self.fmt = _FMT_CYCLE[idx]
+        self.fmt = _FMT_CYCLE[(_FMT_CYCLE.index(self.fmt) + 1) % len(_FMT_CYCLE)]
         self.query_one("#fmt-btn", Button).label = self._fmt_label()
 
     def _toggle_msf(self) -> None:
@@ -309,7 +292,7 @@ class ReconFoxApp(App[None]):
     def action_start_scan(self) -> None:
         url = self.target_url.strip()
         if not url:
-            self._set_status("[#ff4040]error: target URL is empty[/]")
+            self._set_status("[#ff5555]error: target URL is empty[/]")
             return
         if self._scan_worker is not None and not self._scan_worker.is_finished:
             return
@@ -318,18 +301,18 @@ class ReconFoxApp(App[None]):
         for p in _PHASES:
             self._phases[p] = {"state": "idle", "frac": 0.0, "dur": None}
         self._render_phases()
-        self.query_one("#findings", DataTable).clear()
+        self.query_one("#findings", Static).update(format_findings_table([]))
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#stop-btn", Button).disabled = False
 
-        self._log("[#00ff5f][*][/] starting scan")
-        self._log(f"[#5a5a5a]    target : {url}[/]")
-        self._log(f"[#5a5a5a]    mode   : {self.mode.value}[/]")
-        self._log(f"[#5a5a5a]    format : {self.fmt.value}[/]")
-        self._log(f"[#5a5a5a]    msf    : {'on' if self.use_metasploit else 'off'}[/]")
+        self._log("[#2ee66a][+][/] starting scan")
+        self._log(f"[#5a6a5a]    target : {url}[/]")
+        self._log(f"[#5a6a5a]    mode   : {self.mode.value}[/]")
+        self._log(f"[#5a6a5a]    format : {self.fmt.value}[/]")
+        self._log(f"[#5a6a5a]    msf    : {'on' if self.use_metasploit else 'off'}[/]")
 
         self._set_status(
-            f"[#ffb000]running...[/] [#00ff5f]{url}[/] · mode=[#00ff5f]{self.mode.value}[/]"
+            f"[#ffb000]running...[/] [#2ee66a]{url}[/] · mode=[#2ee66a]{self.mode.value}[/]"
         )
         self._phase_timer = self.set_interval(0.08, self._tick_phases)
         self._scan_worker = self.run_worker(self._run_scan(url), exclusive=True)
@@ -337,8 +320,8 @@ class ReconFoxApp(App[None]):
     def _cancel_scan(self) -> None:
         if self._scan_worker and not self._scan_worker.is_finished:
             self._scan_worker.cancel()
-            self._log("[#ff4040][-][/] scan aborted by user")
-            self._set_status("[#ff4040]aborted[/]")
+            self._log("[#ff5555][-][/] scan aborted by user")
+            self._set_status("[#ff5555]aborted[/]")
             self._stop_timer()
             self._reenable_run()
 
@@ -353,28 +336,28 @@ class ReconFoxApp(App[None]):
         try:
             result = await orch.run(url, self.mode)
         except Exception as exc:  # noqa: BLE001
-            self._log(f"[#ff4040][-][/] {exc}")
-            self._set_status(f"[#ff4040]crash: {exc}[/]")
+            self._log(f"[#ff5555][-][/] {exc}")
+            self._set_status(f"[#ff5555]crash: {exc}[/]")
             self._stop_timer()
             self._reenable_run()
             return
 
-        self._populate_findings(result)
+        self.query_one("#findings", Static).update(format_findings_table(result.ports))
         for path, fmt in self._save_report(result):
-            self._log(f"[#00ff5f][+][/] report ([#ffb000]{fmt.value}[/]) → {path}")
+            self._log(f"[#2ee66a][+][/] report ([#ffb000]{fmt.value}[/]) → {path}")
 
         color = {
-            ScanStatus.COMPLETED: "#00ff5f",
+            ScanStatus.COMPLETED: "#2ee66a",
             ScanStatus.PARTIAL: "#ffb000",
-            ScanStatus.FAILED: "#ff4040",
-        }.get(result.status, "#5a5a5a")
+            ScanStatus.FAILED: "#ff5555",
+        }.get(result.status, "#5a6a5a")
         if result.duration_seconds is not None:
             self._set_status(
                 f"[{color}]{result.status.value}[/]  ·  "
-                f"ports=[#00ff5f]{len(result.ports)}[/]  "
-                f"web=[#00ff5f]{len(result.web_findings)}[/]  "
-                f"vulns=[#00ff5f]{len(result.vulnerabilities)}[/]  "
-                f"[#5a5a5a]{result.duration_seconds:.1f}s[/]"
+                f"ports=[#2ee66a]{len(result.ports)}[/]  "
+                f"web=[#2ee66a]{len(result.web_findings)}[/]  "
+                f"vulns=[#2ee66a]{len(result.vulnerabilities)}[/]  "
+                f"[#5a6a5a]{result.duration_seconds:.1f}s[/]"
             )
         else:
             self._set_status(f"[{color}]{result.status.value}[/]")
@@ -392,23 +375,21 @@ class ReconFoxApp(App[None]):
             self._phases[phase] = {"state": "running", "frac": 0.0, "dur": None}
             self._log(f"[#ffb000][*][/] [bold]{phase}[/]: {event.message or 'started'}")
         elif event.status == "info":
-            self._log(f"[#5a5a5a]    →[/] {event.message}")
+            self._log(f"[#5a6a5a]    →[/] {event.message}")
         elif event.status == "completed":
-            self._phases[phase] = {
-                "state": "done", "frac": 1.0, "dur": event.duration_seconds,
-            }
-            tail = f" [#5a5a5a]({event.duration_seconds:.1f}s)[/]" if event.duration_seconds else ""
-            self._log(f"[#00ff5f][+][/] [bold]{phase}[/]: {event.message or 'done'}{tail}")
+            self._phases[phase] = {"state": "done", "frac": 1.0, "dur": event.duration_seconds}
+            tail = f" [#5a6a5a]({event.duration_seconds:.1f}s)[/]" if event.duration_seconds else ""
+            self._log(f"[#2ee66a][+][/] [bold]{phase}[/]: {event.message or 'done'}{tail}")
         elif event.status == "failed":
             self._phases[phase] = {"state": "fail", "frac": 1.0, "dur": None}
-            self._log(f"[#ff4040][-][/] [bold]{phase}[/]: {event.message or 'failed'}")
+            self._log(f"[#ff5555][-][/] [bold]{phase}[/]: {event.message or 'failed'}")
         self._render_phases()
 
     def _tick_phases(self) -> None:
         changed = False
         for st in self._phases.values():
             if st["state"] == "running":
-                st["frac"] = (st["frac"] + 0.05) % 1.0
+                st["frac"] = min(0.95, st["frac"] + 0.03)
                 changed = True
         if changed:
             self._render_phases()
@@ -419,30 +400,24 @@ class ReconFoxApp(App[None]):
             self._phase_timer = None
 
     def _render_phases(self) -> None:
-        lines = [self._phase_line(p) for p in _PHASES]
-        self.query_one("#phases-body", Static).update("\n".join(lines))
+        self.query_one("#phases-body", Static).update(
+            "\n".join(self._phase_line(p) for p in _PHASES)
+        )
 
     def _phase_line(self, name: str) -> str:
         st = self._phases[name]
         state, frac, dur = st["state"], st["frac"], st["dur"]
         if state == "done":
-            bar = f"[#00ff5f]{'█' * _BAR_WIDTH}[/]"
-            status = f"[#00ff5f]done {dur:.1f}s[/]" if dur is not None else "[#00ff5f]done[/]"
-            lbl = "#00ff5f"
+            pct, col, fill = 100, "#2ee66a", _BAR_WIDTH
         elif state == "fail":
-            bar = f"[#ff4040]{'█' * _BAR_WIDTH}[/]"
-            status = "[#ff4040]failed[/]"
-            lbl = "#ff4040"
+            pct, col, fill = 100, "#ff5555", _BAR_WIDTH
         elif state == "running":
-            n = max(1, int(frac * _BAR_WIDTH))
-            bar = f"[#ffb000]{'█' * n}[/][#1a2a1f]{'─' * (_BAR_WIDTH - n)}[/]"
-            status = "[#ffb000]scanning[/]"
-            lbl = "#ffb000"
+            pct, col, fill = int(frac * 100), "#d99e00", max(1, int(frac * _BAR_WIDTH))
         else:
-            bar = f"[#1a2a1f]{'─' * _BAR_WIDTH}[/]"
-            status = "[#3a3f3a]idle[/]"
-            lbl = "#5a5a5a"
-        return f"[{lbl}]{name:<9}[/] {bar}  {status}"
+            pct, col, fill = 0, "#4a5a4a", 0
+        bar = f"[{col}]{'█' * fill}[/][#18241c]{'█' * (_BAR_WIDTH - fill)}[/]"
+        _ = dur
+        return f"[{col}]{name:<9}[/] [{col}]{pct:>3}%[/]  {bar}"
 
     # --- log / findings --------------------------------------------------
 
@@ -451,15 +426,6 @@ class ReconFoxApp(App[None]):
 
     def _set_status(self, msg: str) -> None:
         self.query_one("#status-bar", Static).update(msg)
-
-    def _populate_findings(self, result: ScanResult) -> None:
-        table = self.query_one("#findings", DataTable)
-        table.clear()
-        for p in sorted(result.ports, key=lambda x: x.port):
-            table.add_row(
-                str(p.port), p.protocol, p.service or "—",
-                p.product or "—", p.version or "—",
-            )
 
     def _save_report(self, result: ScanResult) -> list[tuple[Path, ReportFormat]]:
         written: list[tuple[Path, ReportFormat]] = []
@@ -480,7 +446,7 @@ class ReconFoxApp(App[None]):
                 p, used = write_report_to_file(result, target)
                 written.append((p, used))
         except (OSError, ValueError) as exc:
-            self._log(f"[#ff4040][-][/] write failed: {exc}")
+            self._log(f"[#ff5555][-][/] write failed: {exc}")
         return written
 
     def _reenable_run(self) -> None:

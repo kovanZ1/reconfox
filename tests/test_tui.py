@@ -116,19 +116,42 @@ async def test_start_without_url_shows_error(app: ReconFoxApp) -> None:
         assert "url" in text or "error" in text
 
 
-async def test_full_scan_run_populates_findings(app: ReconFoxApp, tmp_path: Path) -> None:
-    from textual.widgets import DataTable
-
+async def test_full_scan_run_completes(app: ReconFoxApp, tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         app.query_one("#url-input").value = "https://example.com"
         app.output_path = str(tmp_path / "out.md")
         await pilot.pause()
         await pilot.press("ctrl+r")
-        # let the worker finish
         await app.workers.wait_for_complete()
         await pilot.pause()
-        table = app.query_one("#findings", DataTable)
-        # fake result has no ports, but the run must complete without error
-        assert table is not None
+        # findings panel exists and run completed without error
+        assert app.query_one("#findings") is not None
         status = str(app.query_one("#status-bar").render()).lower()
         assert "completed" in status or "ports" in status
+
+
+def test_findings_table_formats_columns() -> None:
+    from reconfox.models import PortInfo
+    from reconfox.tui import format_findings_table
+
+    rows = [
+        PortInfo(
+            port=22, protocol="tcp", state="open",
+            service="ssh", product="OpenSSH", version="8.4",
+        ),
+        PortInfo(
+            port=80, protocol="tcp", state="open",
+            service="http", product="nginx", version="1.18",
+        ),
+    ]
+    text = format_findings_table(rows)
+    assert "PORT" in text and "SERVICE" in text and "VERSION" in text
+    assert "|" in text  # pipe separators like the reference
+    assert "22" in text and "OpenSSH" in text and "nginx" in text
+
+
+def test_findings_table_empty() -> None:
+    from reconfox.tui import format_findings_table
+
+    text = format_findings_table([])
+    assert "PORT" in text  # header still present
