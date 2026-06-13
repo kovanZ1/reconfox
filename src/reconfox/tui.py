@@ -115,7 +115,7 @@ class ReconFoxApp(App[None]):
         border: round #1f5a33; text-style: bold;
     }
     .opt-btn:hover { border: round #2ee66a; }
-    .opt-btn.-on { color: #0a0d0b; background: #2ee66a; border: round #2ee66a; }
+    .opt-btn.-on { color: #2ee66a; background: #0d1410; border: round #2ee66a; }
     #opts-gap { width: 1fr; height: 3; }
 
     #actions { height: 3; margin: 1 2 0 2; }
@@ -132,7 +132,7 @@ class ReconFoxApp(App[None]):
     }
 
     .section-title { height: 1; padding: 0 2; color: #4a8a64; text-style: bold; margin: 1 0 0 0; }
-    #phases-body { height: 4; padding: 0 3; background: #0a0d0b; }
+    #phases-body { height: 7; padding: 0 3; background: #0a0d0b; }
 
     #log {
         border: round #2ee66a; border-title-color: #2ee66a; border-title-align: left;
@@ -421,7 +421,12 @@ class ReconFoxApp(App[None]):
 
     def _render_phases(self) -> None:
         bar_w = self._bar_width()
-        text = Text.from_markup("\n".join(self._phase_line(p, bar_w) for p in _PHASES))
+        rows: list[str] = []
+        for i, name in enumerate(_PHASES):
+            rows.append(self._phase_line(name, bar_w))
+            if i < len(_PHASES) - 1:
+                rows.append("")  # blank line → visual gap between bars
+        text = Text.from_markup("\n".join(rows))
         text.no_wrap = True
         text.overflow = "crop"
         self.query_one("#phases-body", Static).update(text)
