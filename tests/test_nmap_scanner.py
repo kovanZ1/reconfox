@@ -147,6 +147,19 @@ class TestScanIntegration:
             await scanner.scan("1.1.1.1", ScanMode.FULL)
         assert proc.killed is True
 
+    async def test_scan_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A hung nmap must be killed and surfaced as NmapError, not block forever."""
+        proc = _HangingProcess()
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _HangingProcess:  # noqa: ARG001
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        scanner = NmapScanner(timeout=0.05)
+        with pytest.raises(NmapError, match="timed out"):
+            await scanner.scan("1.1.1.1", ScanMode.QUICK)
+        assert proc.killed is True
+
 
 class _FakeProcess:
     """Minimal asyncio.subprocess.Process stand-in."""
@@ -175,3 +188,21 @@ class _CancellingProcess:
 
     async def wait(self) -> int:
         return 0
+
+
+class _HangingProcess:
+    """Process whose communicate() never returns — used to trigger a timeout."""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.returncode: int | None = None
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        await asyncio.sleep(30)
+        return b"", b""
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return -9

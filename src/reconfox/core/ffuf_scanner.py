@@ -24,11 +24,13 @@ class FfufError(RuntimeError):
 
 DEFAULT_MATCH_CODES = (200, 301, 302, 307, 401, 403, 405)
 DEFAULT_THREADS = 40
+DEFAULT_TIMEOUT = 900.0  # seconds — anti-hang ceiling, override via FfufScanner(timeout=...)
 
 
 class FfufScanner:
-    def __init__(self, binary: str = "ffuf") -> None:
+    def __init__(self, binary: str = "ffuf", timeout: float | None = None) -> None:
         self.binary = binary
+        self.timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
 
     @staticmethod
     def build_args(
@@ -63,7 +65,10 @@ class FfufScanner:
         out_path = Path(tmp_name)
         try:
             args = self.build_args(target_url, wordlist, out_path, match_codes, threads)
-            rc, _, stderr = await run_capture(self.binary, *args)
+            try:
+                rc, _, stderr = await run_capture(self.binary, *args, timeout=self.timeout)
+            except TimeoutError as exc:
+                raise FfufError(f"ffuf timed out after {self.timeout:.0f}s") from exc
             if rc != 0:
                 err = stderr.decode(errors="replace").strip() or "unknown ffuf error"
                 raise FfufError(f"ffuf exited with code {rc}: {err}")

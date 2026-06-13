@@ -24,12 +24,23 @@ _MODE_FLAGS: dict[ScanMode, list[str]] = {
     ScanMode.STEALTH: ["-T2", "-sS", "-f", "-sV"],
 }
 
+# Per-mode default timeout ceilings (seconds). These are anti-hang safety nets,
+# not tuned scan budgets — a full -p- or stealth -T2 scan can legitimately run
+# for a while. Override via NmapScanner(timeout=...).
+_MODE_TIMEOUTS: dict[ScanMode, float] = {
+    ScanMode.QUICK: 600.0,
+    ScanMode.FULL: 3600.0,
+    ScanMode.STEALTH: 3600.0,
+}
+
 
 class NmapScanner:
     """Run nmap and parse its output."""
 
-    def __init__(self, binary: str = "nmap") -> None:
+    def __init__(self, binary: str = "nmap", timeout: float | None = None) -> None:
         self.binary = binary
+        # None → fall back to the per-mode ceiling in `scan`.
+        self.timeout = timeout
 
     @staticmethod
     def build_args(target: str, mode: ScanMode, ports: str | None = None) -> list[str]:
@@ -49,7 +60,11 @@ class NmapScanner:
         ports: str | None = None,
     ) -> list[PortInfo]:
         args = self.build_args(target, mode, ports)
-        rc, stdout, stderr = await run_capture(self.binary, *args)
+        timeout = self.timeout if self.timeout is not None else _MODE_TIMEOUTS[mode]
+        try:
+            rc, stdout, stderr = await run_capture(self.binary, *args, timeout=timeout)
+        except TimeoutError as exc:
+            raise NmapError(f"nmap timed out after {timeout:.0f}s") from exc
         if rc != 0:
             err = stderr.decode(errors="replace").strip() or "unknown nmap error"
             raise NmapError(f"nmap exited with code {rc}: {err}")

@@ -190,6 +190,23 @@ class TestFuzz:
         with pytest.raises(FfufError, match="some error"):
             await scanner.fuzz("http://target", wl)
 
+    async def test_fuzz_times_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A hung ffuf must be killed and surfaced as FfufError."""
+        wl = tmp_path / "wl.txt"
+        wl.write_text("admin\n")
+        proc = _HangingProcess()
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _HangingProcess:  # noqa: ARG001
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        scanner = FfufScanner(timeout=0.05)
+        with pytest.raises(FfufError, match="timed out"):
+            await scanner.fuzz("http://target", wl)
+        assert proc.killed is True
+
 
 class _FakeProcess:
     def __init__(self, stdout: bytes, stderr: bytes, returncode: int) -> None:
@@ -199,3 +216,21 @@ class _FakeProcess:
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return self._stdout, self._stderr
+
+
+class _HangingProcess:
+    """Process whose communicate() never returns — used to trigger a timeout."""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.returncode: int | None = None
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        await asyncio.sleep(30)
+        return b"", b""
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return -9
