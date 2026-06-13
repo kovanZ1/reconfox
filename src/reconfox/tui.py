@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -401,24 +402,29 @@ class ReconFoxApp(App[None]):
             self._phase_timer.stop()
             self._phase_timer = None
 
+    # prefix = name(9) + space(1) + pct(4) + spaces(2) = 16 chars before the bar
+    _PHASE_PREFIX = 16
+    _TRACK = "#243026"  # unfilled bar track — subtle but visible
+
     def _bar_width(self) -> int:
-        """Bar width = terminal width minus label(9) + pct(4) + spacing/padding."""
+        """Bar spans the full panel width minus the label/percent prefix."""
         try:
             avail = self.query_one("#phases-body", Static).content_size.width
         except Exception:  # noqa: BLE001 — not mounted yet
             avail = 0
         if avail <= 0:
-            avail = max(40, self.size.width - 6)
-        return max(20, avail - 9 - 1 - 4 - 2)
+            avail = max(46, self.size.width - 8)
+        return max(20, avail - self._PHASE_PREFIX - 1)
 
     def on_resize(self, event: Any) -> None:  # noqa: ARG002
         self._render_phases()
 
     def _render_phases(self) -> None:
         bar_w = self._bar_width()
-        self.query_one("#phases-body", Static).update(
-            "\n".join(self._phase_line(p, bar_w) for p in _PHASES)
-        )
+        text = Text.from_markup("\n".join(self._phase_line(p, bar_w) for p in _PHASES))
+        text.no_wrap = True
+        text.overflow = "crop"
+        self.query_one("#phases-body", Static).update(text)
 
     def _phase_line(self, name: str, bar_w: int) -> str:
         st = self._phases[name]
@@ -431,7 +437,7 @@ class ReconFoxApp(App[None]):
             pct, col, fill = int(frac * 100), "#d99e00", max(1, int(frac * bar_w))
         else:
             pct, col, fill = 0, "#4a5a4a", 0
-        bar = f"[{col}]{'█' * fill}[/][#18241c]{'█' * (bar_w - fill)}[/]"
+        bar = f"[{col}]{'█' * fill}[/][{self._TRACK}]{'█' * (bar_w - fill)}[/]"
         return f"[{col}]{name:<9}[/] [{col}]{pct:>3}%[/]  {bar}"
 
     # --- log / findings --------------------------------------------------
