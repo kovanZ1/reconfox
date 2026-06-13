@@ -19,7 +19,13 @@ from reconfox.models import (
     Vulnerability,
     WebFinding,
 )
-from reconfox.reporting import ReportFormat, render_html, render_markdown, write_report
+from reconfox.reporting import (
+    ReportFormat,
+    render_html,
+    render_markdown,
+    render_ndjson,
+    write_report,
+)
 
 
 @pytest.fixture
@@ -157,6 +163,42 @@ class TestMarkdown:
         assert "\n## Injected Heading" not in out
         # a pipe must be escaped so it can't break out of a table cell
         assert "1\\|2" in out
+
+
+# --- NDJSON --------------------------------------------------------------
+
+
+class TestNdjson:
+    def _lines(self, sample_result: ScanResult) -> list[dict]:
+        import json
+
+        out = render_ndjson(sample_result)
+        assert out.endswith("\n")
+        return [json.loads(line) for line in out.splitlines()]
+
+    def test_every_line_is_valid_json(self, sample_result: ScanResult) -> None:
+        records = self._lines(sample_result)
+        assert len(records) >= 2
+
+    def test_first_is_target_last_is_summary(self, sample_result: ScanResult) -> None:
+        records = self._lines(sample_result)
+        assert records[0]["type"] == "target"
+        assert records[0]["schema_version"]
+        assert records[-1]["type"] == "summary"
+
+    def test_one_record_per_finding(self, sample_result: ScanResult) -> None:
+        records = self._lines(sample_result)
+        types = [r["type"] for r in records]
+        assert types.count("port") == len(sample_result.ports)
+        assert types.count("web") == len(sample_result.web_findings)
+        assert types.count("vuln") == len(sample_result.vulnerabilities)
+
+    def test_summary_counts(self, sample_result: ScanResult) -> None:
+        summary = self._lines(sample_result)[-1]
+        assert summary["ports"] == len(sample_result.ports)
+        assert summary["web"] == len(sample_result.web_findings)
+        assert summary["vulns"] == len(sample_result.vulnerabilities)
+        assert summary["status"] == sample_result.status.value
 
 
 # --- HTML ----------------------------------------------------------------
