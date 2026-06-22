@@ -27,6 +27,14 @@ def _records(result: ScanResult) -> Iterator[dict]:
         "ip": t.ip,
         "mode": result.mode.value,
     }
+    for s in result.subdomains:
+        yield {
+            "type": "subdomain",
+            "host": host,
+            "name": s.name,
+            "ip": s.ip,
+            "source": s.source,
+        }
     for p in result.ports:
         yield {
             "type": "port",

@@ -36,6 +36,13 @@
   http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
   (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
   Реализован как новая `Scanner`-стадия — без правок оркестратора.
+- **Subdomain enumeration** (стадия `subdomains`, флаг `--subdomains`).
+  `core/subdomain_finder.py`: пассивно через crt.sh (CT-логи) + активный
+  DNS-bruteforce по встроенному списку, дедуп и резолв каждого имени в IP.
+  Результат — `Subdomain`/`ScanResult.subdomains`, в отчёты (Markdown
+  «## Поддомены», NDJSON `type:subdomain`, JSON). Запускается в первой волне
+  (без зависимостей), пропускается для bare-IP целей. Третья сторона + DNS-шум
+  → **opt-in**. (Глубокий скан каждого поддомена — это будущий multi-target.)
 - **Rate-limit и тюнинг скана.** Прокинуты во флаги: `--threads` и `--rate`
   (ffuf `-t`/`-rate`), `--nmap-min-rate`/`--nmap-max-rate` и `--scan-delay`
   (nmap). Раньше скорость было не настроить, а «stealth» был просто `-T2`;

@@ -18,6 +18,7 @@ from reconfox.core.nmap_scanner import NmapScanner
 from reconfox.core.nuclei_scanner import NucleiScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import Resolver
+from reconfox.core.subdomain_finder import SubdomainFinder
 from reconfox.models import ScanMode, ScanResult, ScanStatus
 from reconfox.reporting import (
     ReportFormat,
@@ -51,12 +52,14 @@ def build_orchestrator(
     nmap_min_rate: int | None = None,
     nmap_max_rate: int | None = None,
     scan_delay: str | None = None,
+    use_subdomains: bool = False,
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
     finder: ExploitFinder | MetasploitFinder = (
         MetasploitFinder() if use_metasploit else ExploitFinder(timeout=timeout)
     )
     nuclei = NucleiScanner(binary=nuclei_binary, timeout=timeout) if use_nuclei else None
+    subdomains = SubdomainFinder(proxy=proxy) if use_subdomains else None
     stages = default_pipeline(
         resolver=Resolver(enrich=enrich, proxy=proxy),
         nmap_scanner=NmapScanner(
@@ -70,6 +73,7 @@ def build_orchestrator(
         exploit_finder=finder,
         http_prober=HttpProber(proxy=proxy),
         nuclei_scanner=nuclei,
+        subdomain_finder=subdomains,
     )
     return Orchestrator(
         stages,
@@ -163,6 +167,12 @@ def main(ctx: click.Context) -> None:
     help="Использовать Metasploit RPC (msfrpcd) вместо searchsploit.",
 )
 @click.option(
+    "--subdomains",
+    is_flag=True,
+    help="Искать поддомены (crt.sh + DNS-brute). Обращается к третьей стороне "
+    "(crt.sh) и шумит DNS — поэтому opt-in.",
+)
+@click.option(
     "--nuclei",
     is_flag=True,
     help="Активное сканирование уязвимостей через nuclei (по живым URL). "
@@ -215,6 +225,7 @@ def scan(
     nmap_max_rate: int | None,
     scan_delay: str | None,
     metasploit: bool,
+    subdomains: bool,
     nuclei: bool,
     nuclei_binary: str,
     enrich: bool,
@@ -254,6 +265,7 @@ def scan(
         nmap_min_rate=nmap_min_rate,
         nmap_max_rate=nmap_max_rate,
         scan_delay=scan_delay,
+        use_subdomains=subdomains,
     )
 
     _banner(url, scan_mode, out)

@@ -18,6 +18,7 @@ from reconfox.core.stages import (
     NmapStage,
     NucleiStage,
     ResolveStage,
+    SubdomainStage,
     default_pipeline,
 )
 from reconfox.models import (
@@ -28,6 +29,7 @@ from reconfox.models import (
     ScanResult,
     ScanStatus,
     Severity,
+    Subdomain,
     Target,
     Vulnerability,
     WebFinding,
@@ -101,6 +103,15 @@ class FakeNuclei:
         return [Vulnerability(title="nuclei hit", severity=Severity.HIGH, source="nuclei")]
 
 
+class FakeSubdomainFinder:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def find(self, domain: str) -> list[Subdomain]:
+        self.calls.append(domain)
+        return [Subdomain(name=f"www.{domain}", ip="1.1.1.1", source="crt.sh")]
+
+
 def _ctx(target: Target | None = None, *, ports: list[PortInfo] | None = None) -> ScanContext:
     t = target or Target.from_url("https://example.com")
     result = ScanResult(
@@ -115,6 +126,31 @@ def _ctx(target: Target | None = None, *, ports: list[PortInfo] | None = None) -
         target=t, mode=ScanMode.QUICK, wordlist=Path("/tmp/wl.txt"),  # noqa: S108
         result=result, emit=lambda *a, **k: None,
     )
+
+
+# --- SubdomainStage ------------------------------------------------------
+
+
+class TestSubdomainStage:
+    def test_runs_first_no_deps(self) -> None:
+        assert SubdomainStage(FakeSubdomainFinder()).depends_on == ()
+
+    def test_not_applicable_without_finder(self) -> None:
+        assert SubdomainStage(None).applicable(_ctx()) is False
+
+    def test_not_applicable_for_ip_target(self) -> None:
+        ctx = _ctx(Target.from_url("http://1.2.3.4"))
+        assert SubdomainStage(FakeSubdomainFinder()).applicable(ctx) is False
+
+    def test_applicable_for_domain(self) -> None:
+        assert SubdomainStage(FakeSubdomainFinder()).applicable(_ctx()) is True
+
+    async def test_run_populates_subdomains(self) -> None:
+        ctx = _ctx()
+        finder = FakeSubdomainFinder()
+        await SubdomainStage(finder).run(ctx)
+        assert finder.calls == ["example.com"]
+        assert [s.name for s in ctx.result.subdomains] == ["www.example.com"]
 
 
 # --- ResolveStage --------------------------------------------------------
@@ -294,11 +330,13 @@ class TestNucleiStage:
 class TestDefaultPipeline:
     def test_builds_stages_with_deps(self) -> None:
         stages = default_pipeline(
-            FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber(), FakeNuclei()
+            FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber(), FakeNuclei(),
+            FakeSubdomainFinder(),
         )
         names = [s.name for s in stages]
-        assert names == ["resolve", "nmap", "ffuf", "http", "nuclei", "exploits"]
+        assert names == ["subdomains", "resolve", "nmap", "ffuf", "http", "nuclei", "exploits"]
         by_name = {s.name: s for s in stages}
+        assert by_name["subdomains"].depends_on == ()
         assert by_name["nmap"].depends_on == ("resolve",)
         assert by_name["ffuf"].depends_on == ("resolve",)
         assert by_name["http"].depends_on == ("nmap",)

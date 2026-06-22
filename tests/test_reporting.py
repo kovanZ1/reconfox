@@ -16,6 +16,7 @@ from reconfox.models import (
     ScanResult,
     ScanStatus,
     Severity,
+    Subdomain,
     Target,
     Vulnerability,
     WebFinding,
@@ -83,6 +84,9 @@ def sample_result() -> ScanResult:
                 technologies=["nginx"],
             ),
         ],
+        subdomains=[
+            Subdomain(name="dev.example.com", ip="93.184.216.35", source="crt.sh"),
+        ],
     )
 
 
@@ -141,6 +145,11 @@ class TestMarkdown:
         assert "## HTTP" in out
         assert "Example Domain" in out
         assert "nginx" in out
+
+    def test_contains_subdomains_section(self, sample_result: ScanResult) -> None:
+        out = render_markdown(sample_result)
+        assert "## Поддомены" in out
+        assert "dev.example.com" in out
 
     def test_neutralizes_markup_injection_in_scan_data(self) -> None:
         """Scan data is attacker-influenced; it must not inject HTML/Markdown."""
@@ -210,6 +219,7 @@ class TestNdjson:
         assert types.count("web") == len(sample_result.web_findings)
         assert types.count("vuln") == len(sample_result.vulnerabilities)
         assert types.count("http") == len(sample_result.http_probes)
+        assert types.count("subdomain") == len(sample_result.subdomains)
 
     def test_summary_counts(self, sample_result: ScanResult) -> None:
         summary = self._lines(sample_result)[-1]

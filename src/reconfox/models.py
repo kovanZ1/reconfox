@@ -105,6 +105,16 @@ class WebFinding(BaseModel):
     redirect: str | None = None
 
 
+class Subdomain(BaseModel):
+    """A discovered subdomain of the target, optionally resolved to an IP."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    ip: str | None = None
+    source: str  # e.g. "crt.sh", "dns-brute"
+
+
 class HttpProbe(BaseModel):
     """Result of an HTTP fingerprint probe against one endpoint."""
 
@@ -180,6 +190,7 @@ class ScanResult(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     status: ScanStatus = ScanStatus.PENDING
+    subdomains: list[Subdomain] = Field(default_factory=list)
     ports: list[PortInfo] = Field(default_factory=list)
     web_findings: list[WebFinding] = Field(default_factory=list)
     http_probes: list[HttpProbe] = Field(default_factory=list)

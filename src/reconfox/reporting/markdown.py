@@ -30,6 +30,7 @@ def render_markdown(result: ScanResult) -> str:
     buf = StringIO()
     _header(buf, result)
     _target_block(buf, result)
+    _subdomains_block(buf, result)
     _ports_block(buf, result)
     _http_block(buf, result)
     _web_block(buf, result)
@@ -67,6 +68,16 @@ def _target_block(buf: StringIO, result: ScanResult) -> None:
         loc = ", ".join(filter(None, [t.geo.city, t.geo.region, t.geo.country]))
         if loc:
             buf.write(f"| Локация | {_md(loc)} |\n")
+    buf.write("\n")
+
+
+def _subdomains_block(buf: StringIO, result: ScanResult) -> None:
+    if not result.subdomains:
+        return
+    buf.write("## Поддомены\n\n")
+    buf.write("| Поддомен | IP | Источник |\n|---|---|---|\n")
+    for s in sorted(result.subdomains, key=lambda x: x.name):
+        buf.write(f"| {_md(s.name)} | {_md(s.ip)} | {_md(s.source)} |\n")
     buf.write("\n")
 
 

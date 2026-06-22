@@ -7,12 +7,21 @@ error and decides whether to abort (for ``critical`` stages) or continue.
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from reconfox.core.scanner import Phase, ScanContext, Scanner
-from reconfox.models import HttpProbe, PortInfo, ScanMode, Target, Vulnerability, WebFinding
+from reconfox.models import (
+    HttpProbe,
+    PortInfo,
+    ScanMode,
+    Subdomain,
+    Target,
+    Vulnerability,
+    WebFinding,
+)
 
 
 # Structural tool interfaces — real tools and test fakes both satisfy these.
@@ -48,8 +57,52 @@ class NucleiProtocol(Protocol):
     async def scan(self, urls: list[str]) -> list[Vulnerability]: ...
 
 
+class SubdomainFinderProtocol(Protocol):
+    async def find(self, domain: str) -> list[Subdomain]: ...
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+class SubdomainStage:
+    """Enumerate subdomains of the target (passive crt.sh + active DNS brute).
+
+    Runs in the first wave (no deps); skipped for bare-IP targets. Opt-in via a
+    finder being supplied.
+    """
+
+    name = "subdomains"
+    phase: Phase = "subdomains"
+    depends_on: tuple[str, ...] = ()
+    critical = False
+
+    def __init__(self, finder: SubdomainFinderProtocol | None) -> None:
+        self.finder = finder
+
+    def applicable(self, ctx: ScanContext) -> bool:
+        if self.finder is None:
+            return False
+        try:
+            ipaddress.ip_address(ctx.target.hostname)
+        except ValueError:
+            return True  # a hostname → enumerable
+        return False  # a bare IP → nothing to enumerate
+
+    async def run(self, ctx: ScanContext) -> None:
+        assert self.finder is not None  # noqa: S101 — guaranteed by applicable()
+        domain = ctx.target.hostname
+        ctx.emit("subdomains", "started", f"enumerating {domain}")
+        start = _now()
+        subs = await self.finder.find(domain)
+        ctx.result.subdomains = subs
+        for s in subs[:20]:
+            ctx.emit("subdomains", "info", f"{s.name} ({s.ip or '?'}) [{s.source}]")
+        if len(subs) > 20:
+            ctx.emit("subdomains", "info", f"... and {len(subs) - 20} more")
+        ctx.emit(
+            "subdomains", "completed", f"{len(subs)} subdomain(s)", (_now() - start).total_seconds()
+        )
 
 
 class ResolveStage:
@@ -275,9 +328,11 @@ def default_pipeline(
     exploit_finder: ExploitFinderProtocol | None = None,
     http_prober: HttpProberProtocol | None = None,
     nuclei_scanner: NucleiProtocol | None = None,
+    subdomain_finder: SubdomainFinderProtocol | None = None,
 ) -> list[Scanner]:
-    """Standard pipeline: resolve → (nmap ‖ ffuf) → http → (nuclei ‖ exploits)."""
+    """Standard pipeline: (subdomains ‖ resolve) → (nmap ‖ ffuf) → http → (nuclei ‖ exploits)."""
     return [
+        SubdomainStage(subdomain_finder),
         ResolveStage(resolver),
         NmapStage(nmap_scanner),
         FfufStage(ffuf_scanner),
