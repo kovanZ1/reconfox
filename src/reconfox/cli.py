@@ -15,6 +15,7 @@ from reconfox.core.ffuf_scanner import FfufScanner
 from reconfox.core.http_prober import HttpProber
 from reconfox.core.metasploit_finder import MetasploitFinder
 from reconfox.core.nmap_scanner import NmapScanner
+from reconfox.core.nuclei_scanner import NucleiScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import Resolver
 from reconfox.models import ScanMode, ScanResult, ScanStatus
@@ -43,17 +44,21 @@ def build_orchestrator(
     enrich: bool = False,
     proxy: str | None = None,
     timeout: float | None = None,
+    use_nuclei: bool = False,
+    nuclei_binary: str = "nuclei",
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
     finder: ExploitFinder | MetasploitFinder = (
         MetasploitFinder() if use_metasploit else ExploitFinder(timeout=timeout)
     )
+    nuclei = NucleiScanner(binary=nuclei_binary, timeout=timeout) if use_nuclei else None
     stages = default_pipeline(
         resolver=Resolver(enrich=enrich, proxy=proxy),
         nmap_scanner=NmapScanner(binary=nmap_binary, timeout=timeout),
         ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout),
         exploit_finder=finder,
         http_prober=HttpProber(proxy=proxy),
+        nuclei_scanner=nuclei,
     )
     return Orchestrator(
         stages,
@@ -136,6 +141,13 @@ def main(ctx: click.Context) -> None:
     help="Использовать Metasploit RPC (msfrpcd) вместо searchsploit.",
 )
 @click.option(
+    "--nuclei",
+    is_flag=True,
+    help="Активное сканирование уязвимостей через nuclei (по живым URL). "
+    "Интрузивно — только с разрешения владельца цели.",
+)
+@click.option("--nuclei-binary", default="nuclei", show_default=True, help="Путь к nuclei.")
+@click.option(
     "--enrich",
     is_flag=True,
     help="Обогащать гео/ASN через ip-api.com. По умолчанию ВЫКЛ (OPSEC: "
@@ -176,6 +188,8 @@ def scan(
     nmap_binary: str,
     ffuf_binary: str,
     metasploit: bool,
+    nuclei: bool,
+    nuclei_binary: str,
     enrich: bool,
     proxy: str | None,
     timeout: float | None,
@@ -206,6 +220,8 @@ def scan(
         enrich=enrich,
         proxy=proxy,
         timeout=timeout,
+        use_nuclei=nuclei,
+        nuclei_binary=nuclei_binary,
     )
 
     _banner(url, scan_mode, out)

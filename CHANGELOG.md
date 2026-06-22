@@ -36,6 +36,12 @@
   http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
   (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
   Реализован как новая `Scanner`-стадия — без правок оркестратора.
+- **nuclei** (стадия `nuclei`, флаг `--nuclei`). Активное сканирование
+  уязвимостей по шаблонам: `core/nuclei_scanner.py` гоняет nuclei (`-jsonl`) по
+  живым URL из HTTP-проб (fallback — сам target) и маппит находки в
+  `Vulnerability` с `source="nuclei"` (severity, CVE, описание, ссылки).
+  Интрузивно, потому **opt-in**. Стадии теперь дополняют (`extend`) список
+  уязвимостей, а не перезаписывают — searchsploit и nuclei сосуществуют.
 
 ### Изменено
 - **Архитектура: Scanner Protocol + registry.** Orchestrator стал generic-движком,

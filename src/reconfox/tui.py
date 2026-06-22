@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 DEFAULT_WORDLIST = Path("/usr/share/wordlists/dirb/common.txt")
 
 _BANNER_FILE = Path(__file__).parent / "assets" / "banner.txt"
-_PHASES = ("resolve", "nmap", "ffuf", "http", "exploits")
+_PHASES = ("resolve", "nmap", "ffuf", "http", "nuclei", "exploits")
 _MODE_CYCLE = (ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH)
 _FMT_CYCLE = (ReportFormat.MARKDOWN, ReportFormat.HTML, ReportFormat.JSON)
 _FMT_NAMES = {
@@ -132,7 +132,7 @@ class ReconFoxApp(App[None]):
     }
 
     .section-title { height: 1; padding: 0 2; color: #4a8a64; text-style: bold; margin: 1 0 0 0; }
-    #phases-body { height: 9; padding: 0 3; background: #0a0d0b; }
+    #phases-body { height: 11; padding: 0 3; background: #0a0d0b; }
 
     #log {
         border: round #2ee66a; border-title-color: #2ee66a; border-title-align: left;

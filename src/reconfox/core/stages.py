@@ -44,6 +44,10 @@ class HttpProberProtocol(Protocol):
     async def probe(self, url: str) -> HttpProbe: ...
 
 
+class NucleiProtocol(Protocol):
+    async def scan(self, urls: list[str]) -> list[Vulnerability]: ...
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -185,6 +189,48 @@ class HttpProbeStage:
         return urls
 
 
+class NucleiStage:
+    """Active template-based vulnerability scan against live web URLs."""
+
+    name = "nuclei"
+    phase: Phase = "nuclei"
+    depends_on: tuple[str, ...] = ("http",)
+    critical = False
+
+    def __init__(self, scanner: NucleiProtocol | None) -> None:
+        self.scanner = scanner
+
+    def applicable(self, ctx: ScanContext) -> bool:
+        return self.scanner is not None and bool(self._targets(ctx))
+
+    async def run(self, ctx: ScanContext) -> None:
+        assert self.scanner is not None  # noqa: S101 — guaranteed by applicable()
+        urls = self._targets(ctx)
+        ctx.emit("nuclei", "started", f"scanning {len(urls)} url(s)")
+        start = _now()
+        vulns = await self.scanner.scan(urls)
+        ctx.result.vulnerabilities.extend(vulns)
+        for v in vulns[:10]:
+            ctx.emit("nuclei", "info", f"[{v.severity.value}] {v.title}")
+        if len(vulns) > 10:
+            ctx.emit("nuclei", "info", f"... and {len(vulns) - 10} more")
+        ctx.emit(
+            "nuclei", "completed", f"{len(vulns)} finding(s)", (_now() - start).total_seconds()
+        )
+
+    @staticmethod
+    def _targets(ctx: ScanContext) -> list[str]:
+        live = [p.final_url or p.url for p in ctx.result.http_probes if p.status is not None]
+        urls = live or [ctx.target.url]
+        seen: set[str] = set()
+        out: list[str] = []
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                out.append(url)
+        return out
+
+
 class ExploitStage:
     """Exploit lookup for discovered services. Needs ports and a finder."""
 
@@ -205,7 +251,8 @@ class ExploitStage:
         ctx.emit("exploits", "started", f"querying for {len(relevant)} service(s)")
         start = _now()
         vulns = await self.finder.find_for_ports(ctx.result.ports)
-        ctx.result.vulnerabilities = vulns
+        # extend (not assign): nuclei may run concurrently and also add findings
+        ctx.result.vulnerabilities.extend(vulns)
         for v in vulns[:10]:
             label = f"[{v.severity.value}] {v.title}"
             if v.cve:
@@ -227,12 +274,14 @@ def default_pipeline(
     ffuf_scanner: FfufProtocol,
     exploit_finder: ExploitFinderProtocol | None = None,
     http_prober: HttpProberProtocol | None = None,
+    nuclei_scanner: NucleiProtocol | None = None,
 ) -> list[Scanner]:
-    """The standard reconfox pipeline: resolve → (nmap ‖ ffuf) → (http ‖ exploits)."""
+    """Standard pipeline: resolve → (nmap ‖ ffuf) → http → (nuclei ‖ exploits)."""
     return [
         ResolveStage(resolver),
         NmapStage(nmap_scanner),
         FfufStage(ffuf_scanner),
         HttpProbeStage(http_prober),
+        NucleiStage(nuclei_scanner),
         ExploitStage(exploit_finder),
     ]

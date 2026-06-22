@@ -138,7 +138,7 @@ class Severity(StrEnum):
         }[self]
 
 
-VulnSource = Literal["searchsploit", "metasploit", "nmap-nse", "manual"]
+VulnSource = Literal["searchsploit", "metasploit", "nmap-nse", "nuclei", "manual"]
 
 
 class Vulnerability(BaseModel):

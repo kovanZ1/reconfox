@@ -16,6 +16,7 @@ from reconfox.core.stages import (
     FfufStage,
     HttpProbeStage,
     NmapStage,
+    NucleiStage,
     ResolveStage,
     default_pipeline,
 )
@@ -89,6 +90,15 @@ class FakeProber:
     async def probe(self, url: str) -> HttpProbe:
         self.calls.append(url)
         return HttpProbe(url=url, status=200, title="Home", server="nginx", technologies=["nginx"])
+
+
+class FakeNuclei:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def scan(self, urls: list[str]) -> list[Vulnerability]:
+        self.calls.append(urls)
+        return [Vulnerability(title="nuclei hit", severity=Severity.HIGH, source="nuclei")]
 
 
 def _ctx(target: Target | None = None, *, ports: list[PortInfo] | None = None) -> ScanContext:
@@ -225,10 +235,57 @@ class TestExploitStage:
         ctx = _ctx(ports=[PortInfo(port=80, protocol="tcp", state="open", product="nginx")])
         assert ExploitStage(FakeFinder()).applicable(ctx) is True
 
-    async def test_run_sets_vulnerabilities(self) -> None:
+    async def test_run_appends_vulnerabilities(self) -> None:
         ctx = _ctx(ports=[PortInfo(port=80, protocol="tcp", state="open", product="nginx")])
+        # a pre-existing finding (e.g. from nuclei) must not be clobbered
+        ctx.result.vulnerabilities.append(
+            Vulnerability(title="pre", severity=Severity.LOW, source="nuclei")
+        )
         await ExploitStage(FakeFinder()).run(ctx)
-        assert len(ctx.result.vulnerabilities) == 1
+        titles = [v.title for v in ctx.result.vulnerabilities]
+        assert "pre" in titles
+        assert "CVE thing" in titles
+
+
+# --- NucleiStage ---------------------------------------------------------
+
+
+class TestNucleiStage:
+    def test_depends_on_http(self) -> None:
+        assert NucleiStage(FakeNuclei()).depends_on == ("http",)
+
+    def test_not_applicable_without_scanner(self) -> None:
+        assert NucleiStage(None).applicable(_ctx()) is False
+
+    def test_applicable_with_scanner(self) -> None:
+        assert NucleiStage(FakeNuclei()).applicable(_ctx()) is True
+
+    async def test_run_scans_live_probe_urls(self) -> None:
+        ctx = _ctx()
+        ctx.result.http_probes = [
+            HttpProbe(url="https://example.com", status=200, final_url="https://example.com/"),
+            HttpProbe(url="https://dead.example", status=None, error="refused"),
+        ]
+        nuclei = FakeNuclei()
+        await NucleiStage(nuclei).run(ctx)
+        # only the live probe's final_url, not the dead one
+        assert nuclei.calls == [["https://example.com/"]]
+
+    async def test_run_falls_back_to_target_url(self) -> None:
+        ctx = _ctx()  # no probes
+        nuclei = FakeNuclei()
+        await NucleiStage(nuclei).run(ctx)
+        assert nuclei.calls == [["https://example.com"]]
+
+    async def test_run_appends_findings(self) -> None:
+        ctx = _ctx()
+        ctx.result.vulnerabilities.append(
+            Vulnerability(title="exploit-db hit", severity=Severity.MEDIUM, source="searchsploit")
+        )
+        await NucleiStage(FakeNuclei()).run(ctx)
+        titles = [v.title for v in ctx.result.vulnerabilities]
+        assert "exploit-db hit" in titles
+        assert "nuclei hit" in titles
 
 
 # --- default_pipeline ----------------------------------------------------
@@ -237,21 +294,23 @@ class TestExploitStage:
 class TestDefaultPipeline:
     def test_builds_stages_with_deps(self) -> None:
         stages = default_pipeline(
-            FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber()
+            FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber(), FakeNuclei()
         )
         names = [s.name for s in stages]
-        assert names == ["resolve", "nmap", "ffuf", "http", "exploits"]
+        assert names == ["resolve", "nmap", "ffuf", "http", "nuclei", "exploits"]
         by_name = {s.name: s for s in stages}
         assert by_name["nmap"].depends_on == ("resolve",)
         assert by_name["ffuf"].depends_on == ("resolve",)
         assert by_name["http"].depends_on == ("nmap",)
+        assert by_name["nuclei"].depends_on == ("http",)
         assert by_name["exploits"].depends_on == ("nmap",)
 
-    def test_exploit_and_http_optional(self) -> None:
+    def test_optional_stages_skipped_when_absent(self) -> None:
         stages = default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf())
         by_name = {s.name: s for s in stages}
-        # no finder and no prober → both skipped
+        # no finder, prober, or nuclei → those stages skipped
         assert by_name["exploits"].applicable(
             _ctx(ports=[PortInfo(port=80, protocol="tcp", state="open", product="x")])
         ) is False
         assert by_name["http"].applicable(_ctx()) is False
+        assert by_name["nuclei"].applicable(_ctx()) is False
