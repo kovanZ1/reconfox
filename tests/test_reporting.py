@@ -10,6 +10,7 @@ import pytest
 from reconfox.models import (
     ASNInfo,
     Geolocation,
+    HttpProbe,
     PortInfo,
     ScanMode,
     ScanResult,
@@ -72,6 +73,16 @@ def sample_result() -> ScanResult:
                 affected_port=80,
             ),
         ],
+        http_probes=[
+            HttpProbe(
+                url="https://example.com",
+                status=200,
+                final_url="https://example.com/",
+                title="Example Domain",
+                server="nginx",
+                technologies=["nginx"],
+            ),
+        ],
     )
 
 
@@ -124,6 +135,12 @@ class TestMarkdown:
         out = render_markdown(sample_result)
         assert "## Ошибки" in out
         assert "nmap: timeout" in out
+
+    def test_contains_http_section(self, sample_result: ScanResult) -> None:
+        out = render_markdown(sample_result)
+        assert "## HTTP" in out
+        assert "Example Domain" in out
+        assert "nginx" in out
 
     def test_neutralizes_markup_injection_in_scan_data(self) -> None:
         """Scan data is attacker-influenced; it must not inject HTML/Markdown."""
@@ -192,6 +209,7 @@ class TestNdjson:
         assert types.count("port") == len(sample_result.ports)
         assert types.count("web") == len(sample_result.web_findings)
         assert types.count("vuln") == len(sample_result.vulnerabilities)
+        assert types.count("http") == len(sample_result.http_probes)
 
     def test_summary_counts(self, sample_result: ScanResult) -> None:
         summary = self._lines(sample_result)[-1]

@@ -31,6 +31,7 @@ def render_markdown(result: ScanResult) -> str:
     _header(buf, result)
     _target_block(buf, result)
     _ports_block(buf, result)
+    _http_block(buf, result)
     _web_block(buf, result)
     _vuln_block(buf, result)
     _errors_block(buf, result)
@@ -79,6 +80,20 @@ def _ports_block(buf: StringIO, result: ScanResult) -> None:
         buf.write(
             f"| {p.port} | {p.protocol} | {p.state} | "
             f"{_md(p.service)} | {_md(p.product)} | {_md(p.version)} |\n"
+        )
+    buf.write("\n")
+
+
+def _http_block(buf: StringIO, result: ScanResult) -> None:
+    if not result.http_probes:
+        return
+    buf.write("## HTTP\n\n")
+    buf.write("| URL | Status | Title | Server | Tech |\n|---|---|---|---|---|\n")
+    for p in result.http_probes:
+        status = "—" if p.status is None else str(p.status)
+        tech = ", ".join(p.technologies) if p.technologies else "—"
+        buf.write(
+            f"| {_md(p.url)} | {status} | {_md(p.title)} | {_md(p.server)} | {_md(tech)} |\n"
         )
     buf.write("\n")
 

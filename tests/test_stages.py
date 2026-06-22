@@ -14,12 +14,14 @@ from reconfox.core.scanner import ScanContext
 from reconfox.core.stages import (
     ExploitStage,
     FfufStage,
+    HttpProbeStage,
     NmapStage,
     ResolveStage,
     default_pipeline,
 )
 from reconfox.models import (
     ASNInfo,
+    HttpProbe,
     PortInfo,
     ScanMode,
     ScanResult,
@@ -78,6 +80,15 @@ class FakeFfuf:
 class FakeFinder:
     async def find_for_ports(self, ports: list[PortInfo]) -> list[Vulnerability]:  # noqa: ARG002
         return [Vulnerability(title="CVE thing", severity=Severity.HIGH, source="searchsploit")]
+
+
+class FakeProber:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def probe(self, url: str) -> HttpProbe:
+        self.calls.append(url)
+        return HttpProbe(url=url, status=200, title="Home", server="nginx", technologies=["nginx"])
 
 
 def _ctx(target: Target | None = None, *, ports: list[PortInfo] | None = None) -> ScanContext:
@@ -163,6 +174,41 @@ class TestFfufStage:
             await FfufStage(FakeFfuf(fail=True)).run(ctx)
 
 
+# --- HttpProbeStage ------------------------------------------------------
+
+
+class TestHttpProbeStage:
+    def test_depends_on_nmap(self) -> None:
+        assert HttpProbeStage(FakeProber()).depends_on == ("nmap",)
+
+    def test_not_applicable_without_prober(self) -> None:
+        assert HttpProbeStage(None).applicable(_ctx()) is False
+
+    def test_applicable_with_prober(self) -> None:
+        assert HttpProbeStage(FakeProber()).applicable(_ctx()) is True
+
+    async def test_run_probes_target_url(self) -> None:
+        ctx = _ctx()
+        prober = FakeProber()
+        await HttpProbeStage(prober).run(ctx)
+        assert len(ctx.result.http_probes) == 1
+        assert prober.calls == ["https://example.com"]
+
+    async def test_run_also_probes_discovered_http_ports(self) -> None:
+        ctx = _ctx(
+            ports=[
+                PortInfo(port=8080, protocol="tcp", state="open", service="http-proxy"),
+                PortInfo(port=22, protocol="tcp", state="open", service="ssh"),
+            ]
+        )
+        prober = FakeProber()
+        await HttpProbeStage(prober).run(ctx)
+        # target url + the open http port (8080), but NOT ssh
+        assert "https://example.com" in prober.calls
+        assert any(":8080" in u for u in prober.calls)
+        assert not any(":22" in u for u in prober.calls)
+
+
 # --- ExploitStage --------------------------------------------------------
 
 
@@ -189,17 +235,23 @@ class TestExploitStage:
 
 
 class TestDefaultPipeline:
-    def test_builds_four_stages_with_deps(self) -> None:
-        stages = default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder())
+    def test_builds_stages_with_deps(self) -> None:
+        stages = default_pipeline(
+            FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber()
+        )
         names = [s.name for s in stages]
-        assert names == ["resolve", "nmap", "ffuf", "exploits"]
+        assert names == ["resolve", "nmap", "ffuf", "http", "exploits"]
         by_name = {s.name: s for s in stages}
         assert by_name["nmap"].depends_on == ("resolve",)
         assert by_name["ffuf"].depends_on == ("resolve",)
+        assert by_name["http"].depends_on == ("nmap",)
         assert by_name["exploits"].depends_on == ("nmap",)
 
-    def test_exploit_optional(self) -> None:
+    def test_exploit_and_http_optional(self) -> None:
         stages = default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf())
-        assert stages[-1].applicable(
+        by_name = {s.name: s for s in stages}
+        # no finder and no prober → both skipped
+        assert by_name["exploits"].applicable(
             _ctx(ports=[PortInfo(port=80, protocol="tcp", state="open", product="x")])
-        ) is False  # no finder → skipped
+        ) is False
+        assert by_name["http"].applicable(_ctx()) is False

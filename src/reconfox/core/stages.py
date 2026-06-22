@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from reconfox.core.scanner import Phase, ScanContext, Scanner
-from reconfox.models import PortInfo, ScanMode, Target, Vulnerability, WebFinding
+from reconfox.models import HttpProbe, PortInfo, ScanMode, Target, Vulnerability, WebFinding
 
 
 # Structural tool interfaces — real tools and test fakes both satisfy these.
@@ -38,6 +38,10 @@ class FfufProtocol(Protocol):
 
 class ExploitFinderProtocol(Protocol):
     async def find_for_ports(self, ports: list[PortInfo]) -> list[Vulnerability]: ...
+
+
+class HttpProberProtocol(Protocol):
+    async def probe(self, url: str) -> HttpProbe: ...
 
 
 def _now() -> datetime:
@@ -132,6 +136,55 @@ class FfufStage:
         )
 
 
+class HttpProbeStage:
+    """HTTP fingerprint of the target's web endpoints. Runs after nmap so it can
+    probe discovered web ports as well as the target URL."""
+
+    name = "http"
+    phase: Phase = "http"
+    depends_on: tuple[str, ...] = ("nmap",)
+    critical = False
+
+    def __init__(self, prober: HttpProberProtocol | None) -> None:
+        self.prober = prober
+
+    def applicable(self, ctx: ScanContext) -> bool:  # noqa: ARG002
+        return self.prober is not None
+
+    async def run(self, ctx: ScanContext) -> None:
+        assert self.prober is not None  # noqa: S101 — guaranteed by applicable()
+        urls = self._target_urls(ctx)
+        ctx.emit("http", "started", f"probing {len(urls)} endpoint(s)")
+        start = _now()
+        probes = []
+        for url in urls:
+            probe = await self.prober.probe(url)
+            probes.append(probe)
+            status = "ERR" if probe.status is None else str(probe.status)
+            tech = f" [{', '.join(probe.technologies)}]" if probe.technologies else ""
+            ctx.emit("http", "info", f"{status} {url}{tech}")
+        ctx.result.http_probes = probes
+        live = sum(1 for p in probes if p.status is not None)
+        ctx.emit(
+            "http", "completed", f"{live}/{len(probes)} live", (_now() - start).total_seconds()
+        )
+
+    @staticmethod
+    def _target_urls(ctx: ScanContext) -> list[str]:
+        t = ctx.target
+        urls = [t.url]
+        seen = {t.url}
+        for p in ctx.result.ports:
+            svc = (p.service or "").lower()
+            if p.state == "open" and svc.startswith("http"):
+                scheme = "https" if ("https" in svc or "ssl" in svc or p.port == 443) else "http"
+                url = f"{scheme}://{t.hostname}:{p.port}"
+                if url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+        return urls
+
+
 class ExploitStage:
     """Exploit lookup for discovered services. Needs ports and a finder."""
 
@@ -173,11 +226,13 @@ def default_pipeline(
     nmap_scanner: NmapProtocol,
     ffuf_scanner: FfufProtocol,
     exploit_finder: ExploitFinderProtocol | None = None,
+    http_prober: HttpProberProtocol | None = None,
 ) -> list[Scanner]:
-    """The standard reconfox pipeline: resolve → (nmap ‖ ffuf) → exploits."""
+    """The standard reconfox pipeline: resolve → (nmap ‖ ffuf) → (http ‖ exploits)."""
     return [
         ResolveStage(resolver),
         NmapStage(nmap_scanner),
         FfufStage(ffuf_scanner),
+        HttpProbeStage(http_prober),
         ExploitStage(exploit_finder),
     ]

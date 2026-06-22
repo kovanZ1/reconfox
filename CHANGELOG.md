@@ -25,9 +25,17 @@
 - Юнит-тесты на `core/_proc.run_capture` (успех / ненулевой код / таймаут с kill
   дочернего / отмена с kill).
 - **Unix-citizen I/O.** Флаг `--ndjson` стримит находки в stdout по одной
-  JSON-строке на запись (target → port/web/vuln → summary, со `schema_version`),
-  человекочитаемый вывод уходит в stderr — pipe-friendly. `-O -` печатает отчёт
-  выбранного формата в stdout. Цель можно подать через stdin: `reconfox scan -`.
+  JSON-строке на запись (target → port/web/http/vuln → summary, со
+  `schema_version`), человекочитаемый вывод уходит в stderr — pipe-friendly.
+  `-O -` печатает отчёт выбранного формата в stdout. Цель можно подать через
+  stdin: `reconfox scan -`.
+- **HTTP-fingerprinting** (стадия `http`). reconfox теперь действительно ходит
+  HTTP(S) к цели: `core/http_prober.py` (httpx) снимает status, финальный URL
+  после редиректов, `<title>`, заголовок `Server` и набор технологий по
+  сигнатурам заголовков/cookie. Пробит сам target и обнаруженные nmap'ом
+  http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
+  (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
+  Реализован как новая `Scanner`-стадия — без правок оркестратора.
 
 ### Изменено
 - **Архитектура: Scanner Protocol + registry.** Orchestrator стал generic-движком,

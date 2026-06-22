@@ -47,6 +47,17 @@ def _records(result: ScanResult) -> Iterator[dict]:
             "length": f.length,
             "redirect": f.redirect,
         }
+    for hp in result.http_probes:
+        yield {
+            "type": "http",
+            "host": host,
+            "url": hp.url,
+            "status": hp.status,
+            "final_url": hp.final_url,
+            "title": hp.title,
+            "server": hp.server,
+            "technologies": hp.technologies,
+        }
     for v in result.vulnerabilities:
         yield {
             "type": "vuln",

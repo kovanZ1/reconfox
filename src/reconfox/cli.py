@@ -12,6 +12,7 @@ from rich.console import Console
 from reconfox import __version__
 from reconfox.core.exploit_finder import ExploitFinder
 from reconfox.core.ffuf_scanner import FfufScanner
+from reconfox.core.http_prober import HttpProber
 from reconfox.core.metasploit_finder import MetasploitFinder
 from reconfox.core.nmap_scanner import NmapScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
@@ -52,6 +53,7 @@ def build_orchestrator(
         nmap_scanner=NmapScanner(binary=nmap_binary, timeout=timeout),
         ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout),
         exploit_finder=finder,
+        http_prober=HttpProber(proxy=proxy),
     )
     return Orchestrator(
         stages,

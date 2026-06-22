@@ -105,6 +105,21 @@ class WebFinding(BaseModel):
     redirect: str | None = None
 
 
+class HttpProbe(BaseModel):
+    """Result of an HTTP fingerprint probe against one endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    status: int | None = None
+    final_url: str | None = None
+    title: str | None = None
+    server: str | None = None
+    technologies: list[str] = Field(default_factory=list)
+    content_length: int | None = None
+    error: str | None = None
+
+
 class Severity(StrEnum):
     INFO = "info"
     LOW = "low"
@@ -167,6 +182,7 @@ class ScanResult(BaseModel):
     status: ScanStatus = ScanStatus.PENDING
     ports: list[PortInfo] = Field(default_factory=list)
     web_findings: list[WebFinding] = Field(default_factory=list)
+    http_probes: list[HttpProbe] = Field(default_factory=list)
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
