@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import sys
 from pathlib import Path
 
@@ -107,7 +108,14 @@ def main(ctx: click.Context) -> None:
 
 
 @main.command()
-@click.argument("url")
+@click.argument("urls", nargs=-1)
+@click.option(
+    "-iL",
+    "--target-file",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    default=None,
+    help="Файл со списком целей (по одной в строке). Можно вместе с аргументами.",
+)
 @click.option(
     "-m",
     "--mode",
@@ -211,7 +219,8 @@ def main(ctx: click.Context) -> None:
 )
 @click.option("--no-tui", is_flag=True, help="Headless режим (без TUI).")
 def scan(
-    url: str,
+    urls: tuple[str, ...],
+    target_file: Path | None,
     mode: str,
     output: Path,
     output_file: Path | None,
@@ -235,20 +244,25 @@ def scan(
     verbose: bool,
     no_tui: bool,  # noqa: ARG001 — CLI flag for symmetry with TUI mode
 ) -> None:
-    """Запустить разведку против указанного URL (или '-' для чтения цели из stdin)."""
+    """Разведка одной или нескольких целей.
+
+    Цели — аргументы, файл (-iL), stdin ('-') и/или CIDR (10.0.0.0/24).
+    """
     # stdout is reserved for report data when piping; route human output to stderr.
     to_stdout = ndjson or (output_file is not None and str(output_file) == "-")
     out = err_console if to_stdout else console
 
-    if url == "-":
-        url = sys.stdin.readline().strip()
-        if not url:
-            out.print("[red][-][/red] пустой stdin: цель не задана")
-            sys.exit(2)
+    try:
+        targets = _collect_targets(urls, target_file)
+    except ValueError as exc:
+        out.print(f"[red][-][/red] {exc}")
+        sys.exit(2)
+    if not targets:
+        out.print("[red][-][/red] не задано ни одной цели")
+        sys.exit(2)
 
     scan_mode = ScanMode(mode.lower())
     progress_cb = _make_progress(verbose, out)
-
     orch = build_orchestrator(
         wordlist=wordlist,
         nmap_binary=nmap_binary,
@@ -268,15 +282,28 @@ def scan(
         use_subdomains=subdomains,
     )
 
+    if len(targets) == 1:
+        _scan_single(orch, targets[0], scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
+    else:
+        _scan_multi(orch, targets, scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
+
+
+def _scan_single(  # noqa: PLR0913 — CLI plumbing
+    orch: Orchestrator,
+    url: str,
+    scan_mode: ScanMode,
+    output: Path,
+    output_file: Path | None,
+    fmt: str,
+    ndjson: bool,
+    to_stdout: bool,
+    out: Console,
+) -> None:
     _banner(url, scan_mode, out)
     result: ScanResult = asyncio.run(orch.run(url, scan_mode))
 
     if to_stdout:
-        if ndjson:
-            click.echo(render_ndjson(result), nl=False)
-        else:
-            single = ReportFormat.JSON if fmt.lower() == "all" else ReportFormat(fmt.lower())
-            click.echo(render(result, single))
+        _emit_stdout(result, fmt, ndjson)
     elif output_file is not None:
         try:
             path, used_fmt = write_report_to_file(result, output_file)
@@ -285,15 +312,105 @@ def scan(
             out.print(f"[red][-][/red] Failed to write {output_file}: {exc}")
             sys.exit(2)
     else:
-        formats = _resolve_formats(fmt)
         output.mkdir(parents=True, exist_ok=True)
-        for f in formats:
+        for f in _resolve_formats(fmt):
             path = write_report(result, output, f)
             out.print(f"[green][+][/green] Saved [cyan]{f.value}[/cyan]: {path}")
 
     _print_summary(result, out)
     if result.status == ScanStatus.FAILED:
         sys.exit(1)
+
+
+def _scan_multi(  # noqa: PLR0913 — CLI plumbing
+    orch: Orchestrator,
+    targets: list[str],
+    scan_mode: ScanMode,
+    output: Path,
+    output_file: Path | None,
+    fmt: str,
+    ndjson: bool,
+    to_stdout: bool,
+    out: Console,
+) -> None:
+    if output_file is not None and not to_stdout:
+        out.print("[red][-][/red] -O поддерживает только одну цель; используй -o (папка)")
+        sys.exit(2)
+    if to_stdout and not ndjson:
+        out.print("[red][-][/red] -O - только для одной цели; для нескольких используй --ndjson")
+        sys.exit(2)
+
+    out.print(f"[bold green]reconfox[/bold green] [grey50]targets=[/grey50]{len(targets)} "
+              f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]")
+    results: list[ScanResult] = asyncio.run(orch.run_many(targets, scan_mode))
+
+    if to_stdout:  # ndjson stream of every target
+        for result in results:
+            click.echo(render_ndjson(result), nl=False)
+    else:
+        output.mkdir(parents=True, exist_ok=True)
+        formats = _resolve_formats(fmt)
+        for result in results:
+            for f in formats:
+                path = write_report(result, output, f)
+                out.print(
+                    f"[green][+][/green] [cyan]{result.target.hostname}[/cyan] "
+                    f"{f.value}: {path}"
+                )
+
+    _print_multi_summary(results, out)
+    if results and all(r.status == ScanStatus.FAILED for r in results):
+        sys.exit(1)
+
+
+def _emit_stdout(result: ScanResult, fmt: str, ndjson: bool) -> None:
+    if ndjson:
+        click.echo(render_ndjson(result), nl=False)
+    else:
+        single = ReportFormat.JSON if fmt.lower() == "all" else ReportFormat(fmt.lower())
+        click.echo(render(result, single))
+
+
+def _collect_targets(urls: tuple[str, ...], target_file: Path | None) -> list[str]:
+    """Gather targets from args, '-' (stdin), a file, expanding CIDRs; dedup."""
+    raw: list[str] = []
+    for item in urls:
+        if item == "-":
+            raw.extend(line.strip() for line in sys.stdin if line.strip())
+        else:
+            raw.append(item)
+    if target_file is not None:
+        raw.extend(
+            line.strip()
+            for line in target_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        for target in _expand_target(entry):
+            if target not in seen:
+                seen.add(target)
+                out.append(target)
+    return out
+
+
+_MAX_CIDR_HOSTS = 4096
+
+
+def _expand_target(entry: str) -> list[str]:
+    """Expand a CIDR into host IPs; pass anything else through unchanged."""
+    if "/" not in entry or entry.startswith(("http://", "https://")):
+        return [entry]
+    try:
+        network = ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return [entry]  # not a CIDR (e.g. host/path) — treat as a single target
+    if network.num_addresses > _MAX_CIDR_HOSTS:
+        raise ValueError(f"CIDR {entry} слишком большой (>{_MAX_CIDR_HOSTS} адресов)")
+    hosts = [str(h) for h in network.hosts()]
+    return hosts or [str(network.network_address)]
 
 
 def _resolve_formats(raw: str) -> list[ReportFormat]:
@@ -347,6 +464,24 @@ def _marker_for(status: str) -> tuple[str, str]:
         "completed": ("[+]", "green"),
         "failed": ("[-]", "red"),
     }.get(status, ("[?]", "white"))
+
+
+def _print_multi_summary(results: list[ScanResult], out: Console) -> None:
+    by_status: dict[str, int] = {}
+    ports = web = vulns = subs = 0
+    for r in results:
+        by_status[r.status.value] = by_status.get(r.status.value, 0) + 1
+        ports += len(r.ports)
+        web += len(r.web_findings)
+        vulns += len(r.vulnerabilities)
+        subs += len(r.subdomains)
+    out.print("[grey50]" + "─" * 70 + "[/grey50]")
+    status_str = ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items()))
+    out.print(
+        f"  targets: [cyan]{len(results)}[/cyan] ({status_str})\n"
+        f"  subdomains: [cyan]{subs}[/cyan]   ports: [cyan]{ports}[/cyan]   "
+        f"web: [cyan]{web}[/cyan]   vulns: [cyan]{vulns}[/cyan]"
+    )
 
 
 def _print_summary(result: ScanResult, out: Console) -> None:

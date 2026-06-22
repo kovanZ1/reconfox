@@ -173,6 +173,25 @@ async def test_all_modes_supported(mode: ScanMode) -> None:
     assert result.status == ScanStatus.COMPLETED
 
 
+class TestRunMany:
+    async def test_scans_all_targets_in_order(self) -> None:
+        orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
+        results = await orch.run_many(
+            ["http://a.example", "http://b.example", "http://c.example"], ScanMode.QUICK
+        )
+        assert [r.target.hostname for r in results] == ["a.example", "b.example", "c.example"]
+        assert all(r.status == ScanStatus.COMPLETED for r in results)
+
+    async def test_respects_concurrency_param(self) -> None:
+        orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
+        results = await orch.run_many(["http://a.example"], ScanMode.QUICK, max_concurrency=1)
+        assert len(results) == 1
+
+    async def test_empty_list(self) -> None:
+        orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
+        assert await orch.run_many([], ScanMode.QUICK) == []
+
+
 # --- Driver-level tests with synthetic stages ----------------------------
 
 

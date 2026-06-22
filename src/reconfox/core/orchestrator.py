@@ -99,6 +99,21 @@ class Orchestrator:
         result.status = self._derive_status(result)
         return result
 
+    async def run_many(
+        self, target_urls: list[str], mode: ScanMode, max_concurrency: int = 10
+    ) -> list[ScanResult]:
+        """Scan several targets, capped by a shared concurrency semaphore.
+
+        Results preserve input order. One target's failure doesn't affect others.
+        """
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _one(url: str) -> ScanResult:
+            async with sem:
+                return await self.run(url, mode)
+
+        return list(await asyncio.gather(*(_one(u) for u in target_urls)))
+
     async def _drive(self, ctx: ScanContext) -> None:
         """Run stages in dependency-ordered concurrent waves."""
         done: set[str] = set()

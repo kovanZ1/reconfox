@@ -32,10 +32,18 @@ class FakeOrchestrator:
     def __init__(self, result: ScanResult | None = None) -> None:
         self.result = result or _completed_result()
         self.run_calls: list[tuple[str, ScanMode]] = []
+        self.run_many_calls: list[tuple[list[str], ScanMode]] = []
 
     async def run(self, url: str, mode: ScanMode) -> ScanResult:
         self.run_calls.append((url, mode))
         return self.result
+
+    async def run_many(
+        self, urls: list[str], mode: ScanMode, max_concurrency: int = 10  # noqa: ARG002
+    ) -> list[ScanResult]:
+        self.run_many_calls.append((list(urls), mode))
+        # distinct hostnames per target so per-target report files don't collide
+        return [_completed_result(u if "://" in u else f"http://{u}") for u in urls]
 
 
 def _result_with_ports(url: str = "https://example.com") -> ScanResult:
@@ -260,3 +268,83 @@ class TestUnixIO:
         # progress/summary chatter must go to stderr, leaving stdout pipe-clean
         assert "status:" not in result.stdout
         assert "status" in result.stderr.lower() or "reconfox" in result.stderr.lower()
+
+
+class TestMultiTarget:
+    def test_multiple_args_write_per_target_reports(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://a.example", "https://b.example", "-o", str(tmp_path), "--no-tui"],
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_many_calls[0][0] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+        assert len(list(tmp_path.glob("*.md"))) == 2  # one report per target
+
+    def test_target_file(self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator) -> None:
+        tf = tmp_path / "targets.txt"
+        tf.write_text("https://a.example\nhttps://b.example\n\n")  # blank line ignored
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "--target-file", str(tf), "-o", str(tmp_path), "--no-tui"]
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_many_calls[0][0] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+
+    def test_cidr_expands_to_hosts(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "10.0.0.0/30", "-o", str(tmp_path), "--no-tui"]
+        )
+        assert result.exit_code == 0, result.output
+        called = _patch_orchestrator.run_many_calls[0][0]
+        assert "10.0.0.1" in called
+        assert "10.0.0.2" in called
+
+    def test_stdin_multi(self, _patch_orchestrator: FakeOrchestrator) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "-", "--no-tui", "--ndjson"],
+            input="https://a.example\nhttps://b.example\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_many_calls[0][0] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+
+    def test_ndjson_streams_all_targets(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "https://a.example", "https://b.example", "--no-tui", "--ndjson"]
+        )
+        assert result.exit_code == 0, result.output
+        targets = [
+            json.loads(ln)
+            for ln in result.stdout.splitlines()
+            if ln.strip() and json.loads(ln)["type"] == "target"
+        ]
+        hosts = {t["hostname"] for t in targets}
+        assert hosts == {"a.example", "b.example"}
+
+    def test_output_file_rejects_multiple_targets(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            [
+                "scan", "https://a.example", "https://b.example",
+                "-O", str(tmp_path / "x.json"), "--no-tui",
+            ],
+        )
+        assert result.exit_code == 2

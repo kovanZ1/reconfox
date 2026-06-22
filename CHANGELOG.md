@@ -36,6 +36,13 @@
   http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
   (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
   Реализован как новая `Scanner`-стадия — без правок оркестратора.
+- **Multi-target.** Можно сканировать несколько целей за запуск:
+  `Orchestrator.run_many` гоняет их под общим семафором (concurrency cap),
+  сохраняя порядок. Источники целей: аргументы (`scan a.com b.com`), файл
+  (`-iL/--target-file`), stdin (`-`, по строке на цель) и CIDR
+  (`10.0.0.0/24` → разворачивается в хосты, лимит 4096). Per-target отчёты в
+  папку или единый NDJSON-поток в stdout; `-O` и `-O -` — только для одной цели.
+  Сводка по всем целям. (Авто-скан обнаруженных поддоменов — следующий шаг.)
 - **Subdomain enumeration** (стадия `subdomains`, флаг `--subdomains`).
   `core/subdomain_finder.py`: пассивно через crt.sh (CT-логи) + активный
   DNS-bruteforce по встроенному списку, дедуп и резолв каждого имени в IP.
