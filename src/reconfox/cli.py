@@ -46,6 +46,11 @@ def build_orchestrator(
     timeout: float | None = None,
     use_nuclei: bool = False,
     nuclei_binary: str = "nuclei",
+    threads: int = 40,
+    rate: int | None = None,
+    nmap_min_rate: int | None = None,
+    nmap_max_rate: int | None = None,
+    scan_delay: str | None = None,
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
     finder: ExploitFinder | MetasploitFinder = (
@@ -54,8 +59,14 @@ def build_orchestrator(
     nuclei = NucleiScanner(binary=nuclei_binary, timeout=timeout) if use_nuclei else None
     stages = default_pipeline(
         resolver=Resolver(enrich=enrich, proxy=proxy),
-        nmap_scanner=NmapScanner(binary=nmap_binary, timeout=timeout),
-        ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout),
+        nmap_scanner=NmapScanner(
+            binary=nmap_binary,
+            timeout=timeout,
+            min_rate=nmap_min_rate,
+            max_rate=nmap_max_rate,
+            scan_delay=scan_delay,
+        ),
+        ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout, threads=threads, rate=rate),
         exploit_finder=finder,
         http_prober=HttpProber(proxy=proxy),
         nuclei_scanner=nuclei,
@@ -135,6 +146,17 @@ def main(ctx: click.Context) -> None:
 )
 @click.option("--nmap-binary", default="nmap", show_default=True, help="Путь к nmap.")
 @click.option("--ffuf-binary", default="ffuf", show_default=True, help="Путь к ffuf.")
+@click.option("--threads", type=int, default=40, show_default=True, help="Потоки ffuf (-t).")
+@click.option(
+    "--rate", type=int, default=None,
+    help="Лимит запросов/сек для ffuf (-rate). 0/не задано — без лимита.",
+)
+@click.option("--nmap-min-rate", type=int, default=None, help="nmap --min-rate (пакетов/сек).")
+@click.option("--nmap-max-rate", type=int, default=None, help="nmap --max-rate (пакетов/сек).")
+@click.option(
+    "--scan-delay", default=None,
+    help="nmap --scan-delay между пробами (напр. 500ms, 1s) — для скрытности.",
+)
 @click.option(
     "--metasploit",
     is_flag=True,
@@ -187,6 +209,11 @@ def scan(
     wordlist: Path,
     nmap_binary: str,
     ffuf_binary: str,
+    threads: int,
+    rate: int | None,
+    nmap_min_rate: int | None,
+    nmap_max_rate: int | None,
+    scan_delay: str | None,
     metasploit: bool,
     nuclei: bool,
     nuclei_binary: str,
@@ -222,6 +249,11 @@ def scan(
         timeout=timeout,
         use_nuclei=nuclei,
         nuclei_binary=nuclei_binary,
+        threads=threads,
+        rate=rate,
+        nmap_min_rate=nmap_min_rate,
+        nmap_max_rate=nmap_max_rate,
+        scan_delay=scan_delay,
     )
 
     _banner(url, scan_mode, out)

@@ -37,17 +37,41 @@ _MODE_TIMEOUTS: dict[ScanMode, float] = {
 class NmapScanner:
     """Run nmap and parse its output."""
 
-    def __init__(self, binary: str = "nmap", timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        binary: str = "nmap",
+        timeout: float | None = None,
+        min_rate: int | None = None,
+        max_rate: int | None = None,
+        scan_delay: str | None = None,
+    ) -> None:
         self.binary = binary
         # None → fall back to the per-mode ceiling in `scan`.
         self.timeout = timeout
+        self.min_rate = min_rate
+        self.max_rate = max_rate
+        self.scan_delay = scan_delay
 
     @staticmethod
-    def build_args(target: str, mode: ScanMode, ports: str | None = None) -> list[str]:
+    def build_args(
+        target: str,
+        mode: ScanMode,
+        ports: str | None = None,
+        min_rate: int | None = None,
+        max_rate: int | None = None,
+        scan_delay: str | None = None,
+    ) -> list[str]:
         flags = list(_MODE_FLAGS[mode])
         if ports is not None:
             flags = [f for f in flags if f not in {"-F", "-p-"}]
             flags.extend(["-p", ports])
+        # Rate / timing controls (opt-in) — let stealth actually be slow.
+        if min_rate is not None:
+            flags.extend(["--min-rate", str(min_rate)])
+        if max_rate is not None:
+            flags.extend(["--max-rate", str(max_rate)])
+        if scan_delay is not None:
+            flags.extend(["--scan-delay", scan_delay])
         # XML output to stdout
         flags.extend(["-oX", "-"])
         flags.append(target)
@@ -59,7 +83,9 @@ class NmapScanner:
         mode: ScanMode,
         ports: str | None = None,
     ) -> list[PortInfo]:
-        args = self.build_args(target, mode, ports)
+        args = self.build_args(
+            target, mode, ports, self.min_rate, self.max_rate, self.scan_delay
+        )
         timeout = self.timeout if self.timeout is not None else _MODE_TIMEOUTS[mode]
         try:
             rc, stdout, stderr = await run_capture(self.binary, *args, timeout=timeout)

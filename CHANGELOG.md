@@ -36,6 +36,10 @@
   http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
   (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
   Реализован как новая `Scanner`-стадия — без правок оркестратора.
+- **Rate-limit и тюнинг скана.** Прокинуты во флаги: `--threads` и `--rate`
+  (ffuf `-t`/`-rate`), `--nmap-min-rate`/`--nmap-max-rate` и `--scan-delay`
+  (nmap). Раньше скорость было не настроить, а «stealth» был просто `-T2`;
+  теперь скрытность/нагрузку можно задать реально. Дефолты режимов не изменены.
 - **nuclei** (стадия `nuclei`, флаг `--nuclei`). Активное сканирование
   уязвимостей по шаблонам: `core/nuclei_scanner.py` гоняет nuclei (`-jsonl`) по
   живым URL из HTTP-проб (fallback — сам target) и маппит находки в

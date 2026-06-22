@@ -28,9 +28,17 @@ DEFAULT_TIMEOUT = 900.0  # seconds — anti-hang ceiling, override via FfufScann
 
 
 class FfufScanner:
-    def __init__(self, binary: str = "ffuf", timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        binary: str = "ffuf",
+        timeout: float | None = None,
+        threads: int = DEFAULT_THREADS,
+        rate: int | None = None,
+    ) -> None:
         self.binary = binary
         self.timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+        self.threads = threads
+        self.rate = rate
 
     @staticmethod
     def build_args(
@@ -39,32 +47,37 @@ class FfufScanner:
         output_file: Path,
         match_codes: list[int] | tuple[int, ...] = DEFAULT_MATCH_CODES,
         threads: int = DEFAULT_THREADS,
+        rate: int | None = None,
     ) -> list[str]:
         if not wordlist.exists():
             raise FfufError(f"wordlist not found: {wordlist}")
         url = target_url if "FUZZ" in target_url else target_url.rstrip("/") + "/FUZZ"
-        return [
+        args = [
             "-u", url,
             "-w", str(wordlist),
             "-mc", ",".join(str(c) for c in match_codes),
             "-t", str(threads),
-            "-of", "json",
-            "-o", str(output_file),
-            "-s",
         ]
+        if rate is not None and rate > 0:
+            args.extend(["-rate", str(rate)])
+        args.extend(["-of", "json", "-o", str(output_file), "-s"])
+        return args
 
     async def fuzz(
         self,
         target_url: str,
         wordlist: Path,
         match_codes: list[int] | tuple[int, ...] = DEFAULT_MATCH_CODES,
-        threads: int = DEFAULT_THREADS,
+        threads: int | None = None,
+        rate: int | None = None,
     ) -> list[WebFinding]:
+        threads = threads if threads is not None else self.threads
+        rate = rate if rate is not None else self.rate
         fd, tmp_name = tempfile.mkstemp(prefix="reconfox_ffuf_", suffix=".json")
         os.close(fd)
         out_path = Path(tmp_name)
         try:
-            args = self.build_args(target_url, wordlist, out_path, match_codes, threads)
+            args = self.build_args(target_url, wordlist, out_path, match_codes, threads, rate)
             try:
                 rc, _, stderr = await run_capture(self.binary, *args, timeout=self.timeout)
             except TimeoutError as exc:

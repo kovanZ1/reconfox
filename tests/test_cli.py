@@ -169,6 +169,18 @@ class TestScanCommand:
         )
         assert result.exit_code == 0
 
+    def test_tuning_flags_accepted(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            [
+                "scan", "https://example.com", "-o", str(tmp_path), "--no-tui",
+                "--threads", "10", "--rate", "50",
+                "--nmap-min-rate", "100", "--nmap-max-rate", "500", "--scan-delay", "1s",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
     def test_invalid_mode_rejected(self, tmp_path: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(

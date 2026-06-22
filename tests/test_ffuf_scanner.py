@@ -142,6 +142,20 @@ class TestBuildArgs:
                 tmp_path / "out.json", match_codes=[200],
             )
 
+    def test_rate_flag(self, tmp_path: Path) -> None:
+        wl = tmp_path / "x.txt"
+        wl.write_text("a\n")
+        out = tmp_path / "out.json"
+        args = FfufScanner.build_args("http://target", wl, out, match_codes=[200], rate=50)
+        assert args[args.index("-rate") + 1] == "50"
+
+    def test_no_rate_flag_when_unset(self, tmp_path: Path) -> None:
+        wl = tmp_path / "x.txt"
+        wl.write_text("a\n")
+        out = tmp_path / "out.json"
+        args = FfufScanner.build_args("http://target", wl, out, match_codes=[200])
+        assert "-rate" not in args
+
 
 def _writes_output(payload: str):
     """Build a fake create_subprocess_exec that writes `payload` to ffuf's -o file."""
@@ -189,6 +203,25 @@ class TestFuzz:
         scanner = FfufScanner()
         with pytest.raises(FfufError, match="some error"):
             await scanner.fuzz("http://target", wl)
+
+    async def test_fuzz_applies_instance_threads_and_rate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        wl = tmp_path / "wl.txt"
+        wl.write_text("admin\n")
+        captured: list[Any] = []
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
+            captured.append(args)
+            flags = list(args[1:])
+            Path(flags[flags.index("-o") + 1]).write_text(SAMPLE_OUTPUT)  # noqa: ASYNC240
+            return _FakeProcess(stdout=b"", stderr=b"", returncode=0)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        await FfufScanner(threads=10, rate=50).fuzz("http://target", wl)
+        flat = list(captured[0])
+        assert flat[flat.index("-t") + 1] == "10"
+        assert flat[flat.index("-rate") + 1] == "50"
 
     async def test_fuzz_times_out(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

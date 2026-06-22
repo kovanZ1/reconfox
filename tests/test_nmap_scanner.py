@@ -99,6 +99,20 @@ class TestBuildArgs:
         assert args[idx + 1] == "80,443,8080"
         assert "-F" not in args  # explicit -p overrides default
 
+    def test_rate_flags(self) -> None:
+        args = NmapScanner.build_args(
+            "1.1.1.1", ScanMode.STEALTH, min_rate=100, max_rate=500, scan_delay="1s"
+        )
+        assert args[args.index("--min-rate") + 1] == "100"
+        assert args[args.index("--max-rate") + 1] == "500"
+        assert args[args.index("--scan-delay") + 1] == "1s"
+
+    def test_no_rate_flags_by_default(self) -> None:
+        args = NmapScanner.build_args("1.1.1.1", ScanMode.QUICK)
+        assert "--min-rate" not in args
+        assert "--max-rate" not in args
+        assert "--scan-delay" not in args
+
 
 class TestScanIntegration:
     """`scan` method with mocked subprocess."""
@@ -146,6 +160,18 @@ class TestScanIntegration:
         with pytest.raises(asyncio.CancelledError):
             await scanner.scan("1.1.1.1", ScanMode.FULL)
         assert proc.killed is True
+
+    async def test_scan_applies_rate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[Any] = []
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
+            captured.append(args)
+            return _FakeProcess(stdout=SAMPLE_XML.encode(), stderr=b"", returncode=0)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        await NmapScanner(min_rate=300).scan("1.1.1.1", ScanMode.QUICK)
+        assert "--min-rate" in captured[0]
+        assert "300" in captured[0]
 
     async def test_scan_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hung nmap must be killed and surfaced as NmapError, not block forever."""
