@@ -18,6 +18,7 @@ from reconfox.models import (
     PortInfo,
     ScanMode,
     ScanStatus,
+    Subdomain,
     Target,
     WebFinding,
 )
@@ -190,6 +191,43 @@ class TestRunMany:
     async def test_empty_list(self) -> None:
         orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
         assert await orch.run_many([], ScanMode.QUICK) == []
+
+
+class _FakeSubFinder:
+    async def find(self, domain: str) -> list[Subdomain]:
+        return [
+            Subdomain(name=f"a.{domain}", source="crt.sh"),
+            Subdomain(name=f"b.{domain}", source="crt.sh"),
+        ]
+
+
+class TestSubdomainExpansion:
+    async def test_expands_to_discovered_hosts(self) -> None:
+        stages = default_pipeline(
+            FakeResolver(), FakeNmap(), FakeFfuf(), subdomain_finder=_FakeSubFinder()
+        )
+        orch = Orchestrator(stages, WL)
+        results = await orch.run_with_subdomain_expansion("http://example.com", ScanMode.QUICK)
+        hosts = [r.target.hostname for r in results]
+        assert hosts[0] == "example.com"  # primary first
+        assert "a.example.com" in hosts
+        assert "b.example.com" in hosts
+        assert len(results) == 3
+
+    async def test_sub_scans_do_not_re_enumerate(self) -> None:
+        stages = default_pipeline(
+            FakeResolver(), FakeNmap(), FakeFfuf(), subdomain_finder=_FakeSubFinder()
+        )
+        orch = Orchestrator(stages, WL)
+        results = await orch.run_with_subdomain_expansion("http://example.com", ScanMode.QUICK)
+        assert results[0].subdomains  # primary enumerated
+        assert all(not r.subdomains for r in results[1:])  # sub-scans did not
+
+    async def test_no_subdomains_returns_only_primary(self) -> None:
+        orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)
+        results = await orch.run_with_subdomain_expansion("http://example.com", ScanMode.QUICK)
+        assert len(results) == 1
+        assert results[0].target.hostname == "example.com"
 
 
 # --- Driver-level tests with synthetic stages ----------------------------

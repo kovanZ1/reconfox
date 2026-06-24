@@ -36,6 +36,11 @@
   http-порты. Результат — в модель `HttpProbe`/`ScanResult.http_probes`, в отчёты
   (Markdown «## HTTP», NDJSON `type:http`, JSON) и в TUI (бар фазы `http`).
   Реализован как новая `Scanner`-стадия — без правок оркестратора.
+- **Авто-скан обнаруженных поддоменов** (флаг `--scan-subdomains`, включает
+  `--subdomains`). `Orchestrator.run_with_subdomain_expansion`: сначала скан
+  основной цели с enum поддоменов, затем прогон всего конвейера по каждому
+  найденному хосту (без повторного enum — без рекурсии). Итог — отчёт по цели +
+  по каждому поддомену (per-target файлы или единый NDJSON-поток).
 - **Multi-target.** Можно сканировать несколько целей за запуск:
   `Orchestrator.run_many` гоняет их под общим семафором (concurrency cap),
   сохраняя порядок. Источники целей: аргументы (`scan a.com b.com`), файл

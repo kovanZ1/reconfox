@@ -33,6 +33,7 @@ class FakeOrchestrator:
         self.result = result or _completed_result()
         self.run_calls: list[tuple[str, ScanMode]] = []
         self.run_many_calls: list[tuple[list[str], ScanMode]] = []
+        self.expansion_calls: list[tuple[str, ScanMode]] = []
 
     async def run(self, url: str, mode: ScanMode) -> ScanResult:
         self.run_calls.append((url, mode))
@@ -44,6 +45,20 @@ class FakeOrchestrator:
         self.run_many_calls.append((list(urls), mode))
         # distinct hostnames per target so per-target report files don't collide
         return [_completed_result(u if "://" in u else f"http://{u}") for u in urls]
+
+    async def run_with_subdomain_expansion(
+        self, url: str, mode: ScanMode, max_concurrency: int = 10  # noqa: ARG002
+    ) -> list[ScanResult]:
+        from urllib.parse import urlparse
+
+        self.expansion_calls.append((url, mode))
+        base = url if "://" in url else f"http://{url}"
+        host = urlparse(base).hostname or "example.com"
+        return [
+            _completed_result(base),
+            _completed_result(f"http://www.{host}"),
+            _completed_result(f"http://dev.{host}"),
+        ]
 
 
 def _result_with_ports(url: str = "https://example.com") -> ScanResult:
@@ -348,3 +363,16 @@ class TestMultiTarget:
             ],
         )
         assert result.exit_code == 2
+
+    def test_scan_subdomains_expands_and_reports(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui", "--scan-subdomains"],
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.expansion_calls[0][0] == "https://example.com"
+        # primary + 2 discovered subdomains → 3 reports
+        assert len(list(tmp_path.glob("*.md"))) == 3

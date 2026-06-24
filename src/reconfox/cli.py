@@ -181,6 +181,12 @@ def main(ctx: click.Context) -> None:
     "(crt.sh) и шумит DNS — поэтому opt-in.",
 )
 @click.option(
+    "--scan-subdomains",
+    is_flag=True,
+    help="Найти поддомены И прогнать по каждому весь конвейер (включает --subdomains). "
+    "Итог — отчёт по основной цели + по каждому поддомену.",
+)
+@click.option(
     "--nuclei",
     is_flag=True,
     help="Активное сканирование уязвимостей через nuclei (по живым URL). "
@@ -235,6 +241,7 @@ def scan(
     scan_delay: str | None,
     metasploit: bool,
     subdomains: bool,
+    scan_subdomains: bool,
     nuclei: bool,
     nuclei_binary: str,
     enrich: bool,
@@ -279,13 +286,30 @@ def scan(
         nmap_min_rate=nmap_min_rate,
         nmap_max_rate=nmap_max_rate,
         scan_delay=scan_delay,
-        use_subdomains=subdomains,
+        use_subdomains=subdomains or scan_subdomains,
     )
 
-    if len(targets) == 1:
+    if scan_subdomains:
+        _check_multi_output(output_file, to_stdout, ndjson, out)
+        out.print(
+            f"[bold green]reconfox[/bold green] [grey50]targets=[/grey50]{len(targets)}+subdomains "
+            f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]"
+        )
+        results = asyncio.run(_expand_all(orch, targets, scan_mode))
+        _output_multi_results(results, output, fmt, to_stdout, out)
+    elif len(targets) == 1:
         _scan_single(orch, targets[0], scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
     else:
         _scan_multi(orch, targets, scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
+
+
+async def _expand_all(
+    orch: Orchestrator, targets: list[str], mode: ScanMode
+) -> list[ScanResult]:
+    results: list[ScanResult] = []
+    for target in targets:
+        results.extend(await orch.run_with_subdomain_expansion(target, mode))
+    return results
 
 
 def _scan_single(  # noqa: PLR0913 — CLI plumbing
@@ -333,6 +357,16 @@ def _scan_multi(  # noqa: PLR0913 — CLI plumbing
     to_stdout: bool,
     out: Console,
 ) -> None:
+    _check_multi_output(output_file, to_stdout, ndjson, out)
+    out.print(f"[bold green]reconfox[/bold green] [grey50]targets=[/grey50]{len(targets)} "
+              f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]")
+    results: list[ScanResult] = asyncio.run(orch.run_many(targets, scan_mode))
+    _output_multi_results(results, output, fmt, to_stdout, out)
+
+
+def _check_multi_output(
+    output_file: Path | None, to_stdout: bool, ndjson: bool, out: Console
+) -> None:
     if output_file is not None and not to_stdout:
         out.print("[red][-][/red] -O поддерживает только одну цель; используй -o (папка)")
         sys.exit(2)
@@ -340,11 +374,15 @@ def _scan_multi(  # noqa: PLR0913 — CLI plumbing
         out.print("[red][-][/red] -O - только для одной цели; для нескольких используй --ndjson")
         sys.exit(2)
 
-    out.print(f"[bold green]reconfox[/bold green] [grey50]targets=[/grey50]{len(targets)} "
-              f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]")
-    results: list[ScanResult] = asyncio.run(orch.run_many(targets, scan_mode))
 
-    if to_stdout:  # ndjson stream of every target
+def _output_multi_results(
+    results: list[ScanResult],
+    output: Path,
+    fmt: str,
+    to_stdout: bool,
+    out: Console,
+) -> None:
+    if to_stdout:  # ndjson stream of every result
         for result in results:
             click.echo(render_ndjson(result), nl=False)
     else:
@@ -354,8 +392,7 @@ def _scan_multi(  # noqa: PLR0913 — CLI plumbing
             for f in formats:
                 path = write_report(result, output, f)
                 out.print(
-                    f"[green][+][/green] [cyan]{result.target.hostname}[/cyan] "
-                    f"{f.value}: {path}"
+                    f"[green][+][/green] [cyan]{result.target.hostname}[/cyan] {f.value}: {path}"
                 )
 
     _print_multi_summary(results, out)

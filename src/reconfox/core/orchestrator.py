@@ -67,6 +67,11 @@ class Orchestrator:
             )
 
     async def run(self, target_url: str, mode: ScanMode) -> ScanResult:
+        return await self._run_pipeline(target_url, mode, self.stages)
+
+    async def _run_pipeline(
+        self, target_url: str, mode: ScanMode, stages: Sequence[Scanner]
+    ) -> ScanResult:
         started_at = datetime.now(UTC)
 
         try:
@@ -94,7 +99,7 @@ class Orchestrator:
             result=result,
             emit=self._emit,
         )
-        await self._drive(ctx)
+        await self._drive(ctx, stages)
         result.finished_at = datetime.now(UTC)
         result.status = self._derive_status(result)
         return result
@@ -114,10 +119,33 @@ class Orchestrator:
 
         return list(await asyncio.gather(*(_one(u) for u in target_urls)))
 
-    async def _drive(self, ctx: ScanContext) -> None:
+    async def run_with_subdomain_expansion(
+        self, target_url: str, mode: ScanMode, max_concurrency: int = 10
+    ) -> list[ScanResult]:
+        """Scan the target (enumerating subdomains), then scan each discovered
+        subdomain through the same pipeline minus the subdomain stage (no recursion).
+
+        Returns [primary, *per-subdomain] in discovery order.
+        """
+        primary = await self.run(target_url, mode)
+        hosts = [s.name for s in primary.subdomains]
+        if not hosts:
+            return [primary]
+
+        sub_stages = [s for s in self.stages if s.name != "subdomains"]
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _one(host: str) -> ScanResult:
+            async with sem:
+                return await self._run_pipeline(host, mode, sub_stages)
+
+        subs = await asyncio.gather(*(_one(h) for h in hosts))
+        return [primary, *subs]
+
+    async def _drive(self, ctx: ScanContext, stages: Sequence[Scanner]) -> None:
         """Run stages in dependency-ordered concurrent waves."""
         done: set[str] = set()
-        remaining = list(self.stages)
+        remaining = list(stages)
         aborted = False
         while remaining and not aborted:
             ready = [s for s in remaining if all(dep in done for dep in s.depends_on)]
