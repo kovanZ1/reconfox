@@ -10,12 +10,14 @@ from reconfox.models import ScanResult
 from reconfox.reporting.html import render_html
 from reconfox.reporting.json_report import render_json
 from reconfox.reporting.markdown import render_markdown
+from reconfox.reporting.sarif import render_sarif
 
 
 class ReportFormat(StrEnum):
     MARKDOWN = "md"
     HTML = "html"
     JSON = "json"
+    SARIF = "sarif"
 
 
 _SAFE_HOSTNAME = re.compile(r"[^a-zA-Z0-9._-]+")
@@ -25,6 +27,7 @@ _FORMAT_BY_SUFFIX: dict[str, ReportFormat] = {
     ".html": ReportFormat.HTML,
     ".htm": ReportFormat.HTML,
     ".json": ReportFormat.JSON,
+    ".sarif": ReportFormat.SARIF,
 }
 
 
@@ -33,6 +36,8 @@ def render(result: ScanResult, fmt: ReportFormat) -> str:
         return render_html(result)
     if fmt == ReportFormat.JSON:
         return render_json(result)
+    if fmt == ReportFormat.SARIF:
+        return render_sarif(result)
     return render_markdown(result)
 
 

@@ -26,6 +26,7 @@ from reconfox.reporting import (
     render_html,
     render_markdown,
     render_ndjson,
+    render_sarif,
     write_report,
 )
 
@@ -229,6 +230,36 @@ class TestNdjson:
         assert summary["status"] == sample_result.status.value
 
 
+# --- SARIF ---------------------------------------------------------------
+
+
+class TestSarif:
+    def _doc(self, sample_result: ScanResult) -> dict:
+        import json
+
+        return json.loads(render_sarif(sample_result))
+
+    def test_valid_skeleton(self, sample_result: ScanResult) -> None:
+        doc = self._doc(sample_result)
+        assert doc["version"] == "2.1.0"
+        assert doc["runs"][0]["tool"]["driver"]["name"] == "reconfox"
+
+    def test_one_result_per_vulnerability(self, sample_result: ScanResult) -> None:
+        results = self._doc(sample_result)["runs"][0]["results"]
+        assert len(results) == len(sample_result.vulnerabilities)
+
+    def test_severity_maps_to_level(self, sample_result: ScanResult) -> None:
+        results = self._doc(sample_result)["runs"][0]["results"]
+        levels = {r["level"] for r in results}
+        # fixture has a HIGH (nginx) and a MEDIUM (OpenSSH) finding
+        assert "error" in levels  # high → error
+        assert "warning" in levels  # medium → warning
+
+    def test_cve_becomes_rule_id(self, sample_result: ScanResult) -> None:
+        rule_ids = {r["ruleId"] for r in self._doc(sample_result)["runs"][0]["results"]}
+        assert "CVE-2018-15473" in rule_ids
+
+
 # --- HTML ----------------------------------------------------------------
 
 
@@ -283,6 +314,14 @@ class TestWriteReport:
         assert path.suffix == ".html"
         content = path.read_text(encoding="utf-8")
         assert content.startswith("<!DOCTYPE html>")
+
+    def test_writes_sarif(self, sample_result: ScanResult, tmp_path: Path) -> None:
+        import json
+
+        path = write_report(sample_result, tmp_path, ReportFormat.SARIF)
+        assert path.exists()
+        assert path.suffix == ".sarif"
+        assert json.loads(path.read_text(encoding="utf-8"))["version"] == "2.1.0"
 
     def test_creates_output_dir_if_missing(
         self, sample_result: ScanResult, tmp_path: Path

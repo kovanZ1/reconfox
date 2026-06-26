@@ -18,6 +18,12 @@
   HTML/Markdown в отчёт (как уже делал HTML-рендерер).
 
 ### Добавлено
+- **SARIF 2.1.0 + `--fail-on` (CI-гейтинг).** Новый формат отчёта `-f sarif`
+  (и расширение `.sarif` для `-O`): уязвимости → SARIF results, severity → level
+  (critical/high→error, medium→warning, low/info→note), CVE → ruleId — заходит в
+  GitHub/GitLab code scanning. Флаг `--fail-on <severity>` завершает процесс с
+  кодом **3**, если есть находка этой важности или выше (для пайплайнов). Коды:
+  0 — ок, 1 — скан упал, 2 — ошибка аргументов, 3 — сработал fail-on.
 - **Таймауты сканеров.** `run_capture` получил параметр `timeout`: по истечении
   дочерний процесс убивается, а не висит вечно. Дефолты: nmap — по режиму
   (quick 600s / full · stealth 3600s), ffuf — 900s, searchsploit — 60s на

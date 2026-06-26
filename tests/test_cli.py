@@ -11,7 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from reconfox import cli
-from reconfox.models import ScanMode, ScanResult, ScanStatus, Target
+from reconfox.models import ScanMode, ScanResult, ScanStatus, Severity, Target, Vulnerability
 
 
 def _completed_result(url: str = "https://example.com") -> ScanResult:
@@ -66,6 +66,12 @@ def _result_with_ports(url: str = "https://example.com") -> ScanResult:
 
     r = _completed_result(url)
     r.ports = [PortInfo(port=80, protocol="tcp", state="open", service="http", product="nginx")]
+    return r
+
+
+def _result_with_high_vuln(url: str = "https://example.com") -> ScanResult:
+    r = _completed_result(url)
+    r.vulnerabilities = [Vulnerability(title="bad", severity=Severity.HIGH, source="nuclei")]
     return r
 
 
@@ -376,3 +382,55 @@ class TestMultiTarget:
         assert _patch_orchestrator.expansion_calls[0][0] == "https://example.com"
         # primary + 2 discovered subdomains → 3 reports
         assert len(list(tmp_path.glob("*.md"))) == 3
+
+
+class TestSarifAndFailOn:
+    def test_format_sarif_writes_file(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "-f", "sarif", "--no-tui"],
+        )
+        assert result.exit_code == 0, result.output
+        assert list(tmp_path.glob("*.sarif"))
+
+    def test_fail_on_triggers_exit_3(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        _patch_orchestrator.result = _result_with_high_vuln()
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui", "--fail-on", "high"],
+        )
+        assert result.exit_code == 3
+
+    def test_fail_on_not_triggered_below_threshold(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        # default result has no vulnerabilities → nothing meets the threshold
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui", "--fail-on", "high"],
+        )
+        assert result.exit_code == 0
+
+    def test_fail_on_multi_target(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        # run_many returns COMPLETED results without vulns by default → no trigger;
+        # but a high finding in any target must trip the gate. Patch run_many output.
+        async def run_many(urls, mode, max_concurrency=10):  # noqa: ANN001, ARG001
+            return [_result_with_high_vuln(u) for u in urls]
+
+        _patch_orchestrator.run_many = run_many  # type: ignore[assignment]
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            [
+                "scan", "https://a.example", "https://b.example",
+                "-o", str(tmp_path), "--no-tui", "--fail-on", "high",
+            ],
+        )
+        assert result.exit_code == 3

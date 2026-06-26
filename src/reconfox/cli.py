@@ -20,7 +20,7 @@ from reconfox.core.nuclei_scanner import NucleiScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import Resolver
 from reconfox.core.subdomain_finder import SubdomainFinder
-from reconfox.models import ScanMode, ScanResult, ScanStatus
+from reconfox.models import ScanMode, ScanResult, ScanStatus, Severity
 from reconfox.reporting import (
     ReportFormat,
     render,
@@ -144,7 +144,7 @@ def main(ctx: click.Context) -> None:
     "-f",
     "--format",
     "fmt",
-    type=click.Choice(["md", "html", "json", "all"], case_sensitive=False),
+    type=click.Choice(["md", "html", "json", "sarif", "all"], case_sensitive=False),
     default="md",
     show_default=True,
     help="Формат(ы) отчёта.",
@@ -218,6 +218,12 @@ def main(ctx: click.Context) -> None:
     "человекочитаемый вывод уходит в stderr. Файлы не пишутся.",
 )
 @click.option(
+    "--fail-on",
+    type=click.Choice([s.value for s in Severity], case_sensitive=False),
+    default=None,
+    help="Выйти с кодом 3, если есть уязвимость этой важности или выше (для CI).",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -248,6 +254,7 @@ def scan(
     proxy: str | None,
     timeout: float | None,
     ndjson: bool,
+    fail_on: str | None,
     verbose: bool,
     no_tui: bool,  # noqa: ARG001 — CLI flag for symmetry with TUI mode
 ) -> None:
@@ -289,6 +296,8 @@ def scan(
         use_subdomains=subdomains or scan_subdomains,
     )
 
+    fail_threshold = Severity(fail_on.lower()) if fail_on else None
+
     if scan_subdomains:
         _check_multi_output(output_file, to_stdout, ndjson, out)
         out.print(
@@ -296,11 +305,17 @@ def scan(
             f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]"
         )
         results = asyncio.run(_expand_all(orch, targets, scan_mode))
-        _output_multi_results(results, output, fmt, to_stdout, out)
+        _output_multi_results(results, output, fmt, to_stdout, out, fail_threshold)
     elif len(targets) == 1:
-        _scan_single(orch, targets[0], scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
+        _scan_single(
+            orch, targets[0], scan_mode, output, output_file, fmt, ndjson, to_stdout, out,
+            fail_threshold,
+        )
     else:
-        _scan_multi(orch, targets, scan_mode, output, output_file, fmt, ndjson, to_stdout, out)
+        _scan_multi(
+            orch, targets, scan_mode, output, output_file, fmt, ndjson, to_stdout, out,
+            fail_threshold,
+        )
 
 
 async def _expand_all(
@@ -322,6 +337,7 @@ def _scan_single(  # noqa: PLR0913 — CLI plumbing
     ndjson: bool,
     to_stdout: bool,
     out: Console,
+    fail_threshold: Severity | None,
 ) -> None:
     _banner(url, scan_mode, out)
     result: ScanResult = asyncio.run(orch.run(url, scan_mode))
@@ -342,8 +358,7 @@ def _scan_single(  # noqa: PLR0913 — CLI plumbing
             out.print(f"[green][+][/green] Saved [cyan]{f.value}[/cyan]: {path}")
 
     _print_summary(result, out)
-    if result.status == ScanStatus.FAILED:
-        sys.exit(1)
+    _exit_code([result], fail_threshold, out)
 
 
 def _scan_multi(  # noqa: PLR0913 — CLI plumbing
@@ -356,12 +371,13 @@ def _scan_multi(  # noqa: PLR0913 — CLI plumbing
     ndjson: bool,
     to_stdout: bool,
     out: Console,
+    fail_threshold: Severity | None,
 ) -> None:
     _check_multi_output(output_file, to_stdout, ndjson, out)
     out.print(f"[bold green]reconfox[/bold green] [grey50]targets=[/grey50]{len(targets)} "
               f"[grey50]mode=[/grey50][bold yellow]{scan_mode.value}[/bold yellow]")
     results: list[ScanResult] = asyncio.run(orch.run_many(targets, scan_mode))
-    _output_multi_results(results, output, fmt, to_stdout, out)
+    _output_multi_results(results, output, fmt, to_stdout, out, fail_threshold)
 
 
 def _check_multi_output(
@@ -381,6 +397,7 @@ def _output_multi_results(
     fmt: str,
     to_stdout: bool,
     out: Console,
+    fail_threshold: Severity | None,
 ) -> None:
     if to_stdout:  # ndjson stream of every result
         for result in results:
@@ -396,6 +413,16 @@ def _output_multi_results(
                 )
 
     _print_multi_summary(results, out)
+    _exit_code(results, fail_threshold, out)
+
+
+def _exit_code(results: list[ScanResult], fail_threshold: Severity | None, out: Console) -> None:
+    """CI-aware exit: 3 when findings meet --fail-on, 1 when every scan failed."""
+    if fail_threshold is not None:
+        worst = [r.highest_severity for r in results if r.highest_severity is not None]
+        if any(s.score >= fail_threshold.score for s in worst):
+            out.print(f"[red][-][/red] fail-on: найдена уязвимость ≥ {fail_threshold.value}")
+            sys.exit(3)
     if results and all(r.status == ScanStatus.FAILED for r in results):
         sys.exit(1)
 
