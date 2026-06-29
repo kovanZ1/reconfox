@@ -19,6 +19,7 @@ from reconfox.models import (
     ScanMode,
     Subdomain,
     Target,
+    TlsInfo,
     Vulnerability,
     WebFinding,
 )
@@ -59,6 +60,10 @@ class NucleiProtocol(Protocol):
 
 class SubdomainFinderProtocol(Protocol):
     async def find(self, domain: str) -> list[Subdomain]: ...
+
+
+class TlsProberProtocol(Protocol):
+    async def probe(self, host: str, port: int = 443) -> TlsInfo: ...
 
 
 def _now() -> datetime:
@@ -132,6 +137,34 @@ class ResolveStage:
             loc = ", ".join(filter(None, [t.geo.city, t.geo.country]))
             ctx.emit("resolve", "info", f"location: {loc}")
         ctx.emit("resolve", "completed", None, (_now() - start).total_seconds())
+
+
+class TlsStage:
+    """Inspect the target's TLS endpoint (version/cipher/cert). HTTPS only."""
+
+    name = "tls"
+    phase: Phase = "tls"
+    depends_on: tuple[str, ...] = ("resolve",)
+    critical = False
+
+    def __init__(self, prober: TlsProberProtocol | None) -> None:
+        self.prober = prober
+
+    def applicable(self, ctx: ScanContext) -> bool:
+        return self.prober is not None and (ctx.target.is_https or ctx.target.port == 443)
+
+    async def run(self, ctx: ScanContext) -> None:
+        assert self.prober is not None  # noqa: S101 — guaranteed by applicable()
+        port = ctx.target.port if ctx.target.is_https else 443
+        ctx.emit("tls", "started", f"tls {ctx.target.hostname}:{port}")
+        start = _now()
+        info = await self.prober.probe(ctx.target.hostname, port)
+        ctx.result.tls = info
+        if info.error:
+            ctx.emit("tls", "info", info.error)
+        else:
+            ctx.emit("tls", "info", f"{info.version or '?'} · {info.subject or '?'}")
+        ctx.emit("tls", "completed", None, (_now() - start).total_seconds())
 
 
 class NmapStage:
@@ -329,11 +362,13 @@ def default_pipeline(
     http_prober: HttpProberProtocol | None = None,
     nuclei_scanner: NucleiProtocol | None = None,
     subdomain_finder: SubdomainFinderProtocol | None = None,
+    tls_prober: TlsProberProtocol | None = None,
 ) -> list[Scanner]:
-    """Standard pipeline: (subdomains ‖ resolve) → (nmap ‖ ffuf) → http → (nuclei ‖ exploits)."""
+    """Standard pipeline: subdomains, resolve→tls, nmap‖ffuf, http, then nuclei‖exploits."""
     return [
         SubdomainStage(subdomain_finder),
         ResolveStage(resolver),
+        TlsStage(tls_prober),
         NmapStage(nmap_scanner),
         FfufStage(ffuf_scanner),
         HttpProbeStage(http_prober),

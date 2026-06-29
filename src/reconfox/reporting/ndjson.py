@@ -27,6 +27,20 @@ def _records(result: ScanResult) -> Iterator[dict]:
         "ip": t.ip,
         "mode": result.mode.value,
     }
+    if result.tls is not None:
+        t = result.tls
+        yield {
+            "type": "tls",
+            "host": t.host,
+            "port": t.port,
+            "version": t.version,
+            "cipher": t.cipher,
+            "subject": t.subject,
+            "issuer": t.issuer,
+            "san": t.san,
+            "not_after": t.not_after,
+            "error": t.error,
+        }
     for s in result.subdomains:
         yield {
             "type": "subdomain",

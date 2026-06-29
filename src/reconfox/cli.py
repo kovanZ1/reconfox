@@ -23,6 +23,7 @@ from reconfox.core.nuclei_scanner import NucleiScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import Resolver
 from reconfox.core.subdomain_finder import SubdomainFinder
+from reconfox.core.tls_prober import TlsProber
 from reconfox.models import ScanMode, ScanResult, ScanStatus, Severity
 from reconfox.reporting import (
     ReportFormat,
@@ -79,6 +80,7 @@ def build_orchestrator(
         http_prober=HttpProber(proxy=proxy),
         nuclei_scanner=nuclei,
         subdomain_finder=subdomains,
+        tls_prober=TlsProber(),
     )
     return Orchestrator(
         stages,

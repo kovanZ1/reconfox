@@ -30,6 +30,7 @@ def render_markdown(result: ScanResult) -> str:
     buf = StringIO()
     _header(buf, result)
     _target_block(buf, result)
+    _tls_block(buf, result)
     _subdomains_block(buf, result)
     _ports_block(buf, result)
     _http_block(buf, result)
@@ -68,6 +69,30 @@ def _target_block(buf: StringIO, result: ScanResult) -> None:
         loc = ", ".join(filter(None, [t.geo.city, t.geo.region, t.geo.country]))
         if loc:
             buf.write(f"| Локация | {_md(loc)} |\n")
+    buf.write("\n")
+
+
+def _tls_block(buf: StringIO, result: ScanResult) -> None:
+    t = result.tls
+    if t is None:
+        return
+    buf.write("## TLS\n\n")
+    buf.write("| Поле | Значение |\n|---|---|\n")
+    buf.write(f"| Endpoint | {_md(t.host)}:{t.port} |\n")
+    if t.version:
+        buf.write(f"| Версия | {_md(t.version)} |\n")
+    if t.cipher:
+        buf.write(f"| Cipher | {_md(t.cipher)} |\n")
+    if t.subject:
+        buf.write(f"| Subject | {_md(t.subject)} |\n")
+    if t.issuer:
+        buf.write(f"| Issuer | {_md(t.issuer)} |\n")
+    if t.not_after:
+        buf.write(f"| Действует до | {_md(t.not_after)} |\n")
+    if t.san:
+        buf.write(f"| SAN | {_md(', '.join(t.san))} |\n")
+    if t.error:
+        buf.write(f"| Ошибка | {_md(t.error)} |\n")
     buf.write("\n")
 
 

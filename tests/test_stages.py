@@ -19,6 +19,7 @@ from reconfox.core.stages import (
     NucleiStage,
     ResolveStage,
     SubdomainStage,
+    TlsStage,
     default_pipeline,
 )
 from reconfox.models import (
@@ -31,6 +32,7 @@ from reconfox.models import (
     Severity,
     Subdomain,
     Target,
+    TlsInfo,
     Vulnerability,
     WebFinding,
 )
@@ -110,6 +112,15 @@ class FakeSubdomainFinder:
     async def find(self, domain: str) -> list[Subdomain]:
         self.calls.append(domain)
         return [Subdomain(name=f"www.{domain}", ip="1.1.1.1", source="crt.sh")]
+
+
+class FakeTls:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    async def probe(self, host: str, port: int = 443) -> TlsInfo:
+        self.calls.append((host, port))
+        return TlsInfo(host=host, port=port, version="TLSv1.3", subject=host)
 
 
 def _ctx(target: Target | None = None, *, ports: list[PortInfo] | None = None) -> ScanContext:
@@ -218,6 +229,31 @@ class TestFfufStage:
         ctx = _ctx()
         with pytest.raises(FfufError):
             await FfufStage(FakeFfuf(fail=True)).run(ctx)
+
+
+# --- TlsStage ------------------------------------------------------------
+
+
+class TestTlsStage:
+    def test_not_applicable_without_prober(self) -> None:
+        ctx = _ctx(Target.from_url("https://example.com"))
+        assert TlsStage(None).applicable(ctx) is False
+
+    def test_applicable_for_https(self) -> None:
+        ctx = _ctx(Target.from_url("https://example.com"))
+        assert TlsStage(FakeTls()).applicable(ctx) is True
+
+    def test_not_applicable_for_plain_http(self) -> None:
+        ctx = _ctx(Target.from_url("http://example.com"))  # port 80, not https
+        assert TlsStage(FakeTls()).applicable(ctx) is False
+
+    async def test_run_sets_tls_info(self) -> None:
+        ctx = _ctx(Target.from_url("https://example.com"))
+        tls = FakeTls()
+        await TlsStage(tls).run(ctx)
+        assert ctx.result.tls is not None
+        assert ctx.result.tls.version == "TLSv1.3"
+        assert tls.calls == [("example.com", 443)]
 
 
 # --- HttpProbeStage ------------------------------------------------------
@@ -331,12 +367,15 @@ class TestDefaultPipeline:
     def test_builds_stages_with_deps(self) -> None:
         stages = default_pipeline(
             FakeResolver(), FakeNmap(), FakeFfuf(), FakeFinder(), FakeProber(), FakeNuclei(),
-            FakeSubdomainFinder(),
+            FakeSubdomainFinder(), FakeTls(),
         )
         names = [s.name for s in stages]
-        assert names == ["subdomains", "resolve", "nmap", "ffuf", "http", "nuclei", "exploits"]
+        assert names == [
+            "subdomains", "resolve", "tls", "nmap", "ffuf", "http", "nuclei", "exploits"
+        ]
         by_name = {s.name: s for s in stages}
         assert by_name["subdomains"].depends_on == ()
+        assert by_name["tls"].depends_on == ("resolve",)
         assert by_name["nmap"].depends_on == ("resolve",)
         assert by_name["ffuf"].depends_on == ("resolve",)
         assert by_name["http"].depends_on == ("nmap",)

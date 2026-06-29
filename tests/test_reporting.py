@@ -18,6 +18,7 @@ from reconfox.models import (
     Severity,
     Subdomain,
     Target,
+    TlsInfo,
     Vulnerability,
     WebFinding,
 )
@@ -88,6 +89,10 @@ def sample_result() -> ScanResult:
         subdomains=[
             Subdomain(name="dev.example.com", ip="93.184.216.35", source="crt.sh"),
         ],
+        tls=TlsInfo(
+            host="example.com", port=443, version="TLSv1.3",
+            subject="example.com", issuer="R3", san=["example.com", "www.example.com"],
+        ),
     )
 
 
@@ -151,6 +156,11 @@ class TestMarkdown:
         out = render_markdown(sample_result)
         assert "## Поддомены" in out
         assert "dev.example.com" in out
+
+    def test_contains_tls_section(self, sample_result: ScanResult) -> None:
+        out = render_markdown(sample_result)
+        assert "## TLS" in out
+        assert "TLSv1.3" in out
 
     def test_neutralizes_markup_injection_in_scan_data(self) -> None:
         """Scan data is attacker-influenced; it must not inject HTML/Markdown."""
@@ -221,6 +231,7 @@ class TestNdjson:
         assert types.count("vuln") == len(sample_result.vulnerabilities)
         assert types.count("http") == len(sample_result.http_probes)
         assert types.count("subdomain") == len(sample_result.subdomains)
+        assert types.count("tls") == (1 if sample_result.tls else 0)
 
     def test_summary_counts(self, sample_result: ScanResult) -> None:
         summary = self._lines(sample_result)[-1]

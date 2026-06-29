@@ -115,6 +115,23 @@ class Subdomain(BaseModel):
     source: str  # e.g. "crt.sh", "dns-brute"
 
 
+class TlsInfo(BaseModel):
+    """TLS handshake + certificate summary for one endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str
+    port: int
+    version: str | None = None
+    cipher: str | None = None
+    subject: str | None = None
+    issuer: str | None = None
+    san: list[str] = Field(default_factory=list)
+    not_before: str | None = None
+    not_after: str | None = None
+    error: str | None = None
+
+
 class HttpProbe(BaseModel):
     """Result of an HTTP fingerprint probe against one endpoint."""
 
@@ -191,6 +208,7 @@ class ScanResult(BaseModel):
     finished_at: datetime | None = None
     status: ScanStatus = ScanStatus.PENDING
     subdomains: list[Subdomain] = Field(default_factory=list)
+    tls: TlsInfo | None = None
     ports: list[PortInfo] = Field(default_factory=list)
     web_findings: list[WebFinding] = Field(default_factory=list)
     http_probes: list[HttpProbe] = Field(default_factory=list)

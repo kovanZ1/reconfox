@@ -18,6 +18,11 @@
   HTML/Markdown в отчёт (как уже делал HTML-рендерер).
 
 ### Добавлено
+- **TLS/cert-анализ** (стадия `tls`, для HTTPS-целей). `core/tls_prober.py`
+  снимает версию TLS, cipher, subject/issuer/SAN и срок сертификата. Сначала
+  проверенный handshake (полный сертификат), при self-signed/expired — fallback
+  на непроверенный для версии/cipher + текст ошибки. Результат — `TlsInfo` /
+  `ScanResult.tls`, в отчёты (Markdown «## TLS», NDJSON `type:tls`, JSON).
 - **Config-файл + env.** `--config config.toml` (и дефолт
   `~/.config/reconfox/config.toml`) с таблицами `[scan]`/`[diff]`, плюс
   переменные `RECONFOX_*`. Приоритет: флаг CLI > env > config > встроенный

@@ -18,7 +18,7 @@ from typing import Literal, Protocol, runtime_checkable
 from reconfox.models import ScanMode, ScanResult, Target
 
 Phase = Literal[
-    "subdomains", "resolve", "nmap", "ffuf", "http", "nuclei", "exploits", "report"
+    "subdomains", "resolve", "tls", "nmap", "ffuf", "http", "nuclei", "exploits", "report"
 ]
 Status = Literal["started", "info", "completed", "failed"]
 
