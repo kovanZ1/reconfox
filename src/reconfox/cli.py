@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import sys
+import tomllib
 from pathlib import Path
 
 import click
@@ -85,11 +87,44 @@ def build_orchestrator(
     )
 
 
-@click.group(invoke_without_command=True)
+def _load_config(config_path: Path | None) -> dict:
+    """Load config.toml as a click default_map ({command: {param: value}}).
+
+    Explicit --config wins; otherwise the XDG default path is tried (optional).
+    """
+    if config_path is None:
+        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        config_path = Path(xdg) / "reconfox" / "config.toml"
+        if not config_path.exists():
+            return {}
+    try:
+        return tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+@click.group(
+    invoke_without_command=True,
+    context_settings={"auto_envvar_prefix": "RECONFOX"},
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Путь к config.toml (по умолчанию ~/.config/reconfox/config.toml).",
+)
 @click.version_option(version=__version__, prog_name="reconfox")
 @click.pass_context
-def main(ctx: click.Context) -> None:
-    """reconfox — recon toolkit for authorized security testing."""
+def main(ctx: click.Context, config_path: Path | None) -> None:
+    """reconfox — recon toolkit for authorized security testing.
+
+    Настройки читаются из config.toml ([scan]/[diff] таблицы) и переменных
+    RECONFOX_* ; приоритет: флаг CLI > env > config > дефолт.
+    """
+    config = _load_config(config_path)
+    if config:
+        ctx.default_map = config
     if ctx.invoked_subcommand is None:
         from reconfox.tui import run_tui
 

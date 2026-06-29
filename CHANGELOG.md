@@ -18,6 +18,11 @@
   HTML/Markdown в отчёт (как уже делал HTML-рендерер).
 
 ### Добавлено
+- **Config-файл + env.** `--config config.toml` (и дефолт
+  `~/.config/reconfox/config.toml`) с таблицами `[scan]`/`[diff]`, плюс
+  переменные `RECONFOX_*`. Приоритет: флаг CLI > env > config > встроенный
+  дефолт (через click `default_map` + `auto_envvar_prefix`). Убирает
+  необходимость каждый раз повторять путь wordlist, бинари, режим и т.п.
 - **Scan diffing** — команда `reconfox diff old.json new.json`. Сравнивает два
   JSON-отчёта и показывает, что появилось/исчезло (поддомены, порты, веб-находки,
   уязвимости). Форматы `-f md|json`, `-O` в файл, флаг `--fail-on-change` → exit 3

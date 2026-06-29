@@ -384,6 +384,46 @@ class TestMultiTarget:
         assert len(list(tmp_path.glob("*.md"))) == 3
 
 
+class TestConfig:
+    def test_config_file_sets_default_mode(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text('[scan]\nmode = "full"\n', encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["--config", str(cfg), "scan", "https://example.com", "-o", str(tmp_path), "--no-tui"],
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_calls[0][1] == ScanMode.FULL
+
+    def test_cli_arg_overrides_config(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text('[scan]\nmode = "full"\n', encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            [
+                "--config", str(cfg), "scan", "https://example.com",
+                "-m", "quick", "-o", str(tmp_path), "--no-tui",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert _patch_orchestrator.run_calls[0][1] == ScanMode.QUICK
+
+    def test_no_config_is_harmless(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui"]
+        )
+        assert result.exit_code == 0, result.output
+
+
 class TestDiffCommand:
     def _write(self, path: Path, result: ScanResult) -> None:
         path.write_text(result.model_dump_json(), encoding="utf-8")
