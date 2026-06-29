@@ -18,6 +18,10 @@
   HTML/Markdown в отчёт (как уже делал HTML-рендерер).
 
 ### Добавлено
+- **Scan diffing** — команда `reconfox diff old.json new.json`. Сравнивает два
+  JSON-отчёта и показывает, что появилось/исчезло (поддомены, порты, веб-находки,
+  уязвимости). Форматы `-f md|json`, `-O` в файл, флаг `--fail-on-change` → exit 3
+  при изменениях (для cron-мониторинга: «алертить только на новое»).
 - **SARIF 2.1.0 + `--fail-on` (CI-гейтинг).** Новый формат отчёта `-f sarif`
   (и расширение `.sarif` для `-O`): уязвимости → SARIF results, severity → level
   (critical/high→error, medium→warning, low/info→note), CVE → ruleId — заходит в

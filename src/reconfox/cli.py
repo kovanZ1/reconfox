@@ -11,6 +11,7 @@ import click
 from rich.console import Console
 
 from reconfox import __version__
+from reconfox.core.diffing import compute_diff
 from reconfox.core.exploit_finder import ExploitFinder
 from reconfox.core.ffuf_scanner import FfufScanner
 from reconfox.core.http_prober import HttpProber
@@ -24,6 +25,7 @@ from reconfox.models import ScanMode, ScanResult, ScanStatus, Severity
 from reconfox.reporting import (
     ReportFormat,
     render,
+    render_diff_markdown,
     render_ndjson,
     write_report,
     write_report_to_file,
@@ -105,6 +107,48 @@ def main(ctx: click.Context) -> None:
             )
 
         run_tui(orchestrator_factory=factory)
+
+
+@main.command(name="diff")
+@click.argument("old_file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.argument("new_file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option(
+    "-f", "--format", "fmt",
+    type=click.Choice(["md", "json"], case_sensitive=False),
+    default="md", show_default=True, help="Формат diff-отчёта.",
+)
+@click.option(
+    "-O", "--output-file", type=click.Path(path_type=Path), default=None,
+    help="Записать diff в файл (иначе — в stdout).",
+)
+@click.option(
+    "--fail-on-change", is_flag=True,
+    help="Выйти с кодом 3, если есть изменения (для мониторинга в CI/cron).",
+)
+def diff(
+    old_file: Path, new_file: Path, fmt: str, output_file: Path | None, fail_on_change: bool
+) -> None:
+    """Сравнить два JSON-отчёта reconfox (что появилось/исчезло между сканами)."""
+    try:
+        old = ScanResult.model_validate_json(old_file.read_text(encoding="utf-8"))
+        new = ScanResult.model_validate_json(new_file.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        console.print(f"[red][-][/red] не удалось прочитать отчёты: {exc}")
+        sys.exit(2)
+
+    result = compute_diff(old, new)
+    if fmt.lower() == "json":
+        text = result.model_dump_json(indent=2)
+    else:
+        text = render_diff_markdown(result)
+    if output_file is not None:
+        output_file.write_text(text, encoding="utf-8")
+        console.print(f"[green][+][/green] diff → {output_file}")
+    else:
+        click.echo(text)
+
+    if fail_on_change and result.has_changes:
+        sys.exit(3)
 
 
 @main.command()

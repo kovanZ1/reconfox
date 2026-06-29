@@ -1,5 +1,6 @@
 """Report generation — Markdown / HTML / JSON."""
 
+from reconfox.reporting.diff_report import render_diff_markdown
 from reconfox.reporting.html import render_html
 from reconfox.reporting.json_report import render_json
 from reconfox.reporting.markdown import render_markdown
@@ -17,6 +18,7 @@ __all__ = [
     "ReportFormat",
     "default_filename",
     "render",
+    "render_diff_markdown",
     "render_html",
     "render_json",
     "render_markdown",

@@ -230,6 +230,46 @@ class TestNdjson:
         assert summary["status"] == sample_result.status.value
 
 
+# --- Diff ----------------------------------------------------------------
+
+
+class TestDiffReport:
+    def test_markdown_lists_added_and_removed(self) -> None:
+        from reconfox.core.diffing import compute_diff
+        from reconfox.reporting import render_diff_markdown
+
+        old = ScanResult(
+            target=Target.from_url("https://example.com"),
+            mode=ScanMode.QUICK,
+            started_at=datetime(2026, 6, 10, tzinfo=UTC),
+            status=ScanStatus.COMPLETED,
+            ports=[PortInfo(port=22, protocol="tcp", state="open")],
+        )
+        new = ScanResult(
+            target=Target.from_url("https://example.com"),
+            mode=ScanMode.QUICK,
+            started_at=datetime(2026, 6, 11, tzinfo=UTC),
+            status=ScanStatus.COMPLETED,
+            ports=[PortInfo(port=443, protocol="tcp", state="open")],
+        )
+        out = render_diff_markdown(compute_diff(old, new))
+        assert "443" in out  # added
+        assert "22" in out   # removed
+
+    def test_markdown_no_changes(self) -> None:
+        from reconfox.core.diffing import compute_diff
+        from reconfox.reporting import render_diff_markdown
+
+        r = ScanResult(
+            target=Target.from_url("https://example.com"),
+            mode=ScanMode.QUICK,
+            started_at=datetime(2026, 6, 10, tzinfo=UTC),
+            status=ScanStatus.COMPLETED,
+        )
+        out = render_diff_markdown(compute_diff(r, r))
+        assert "без изменений" in out.lower() or "no changes" in out.lower()
+
+
 # --- SARIF ---------------------------------------------------------------
 
 

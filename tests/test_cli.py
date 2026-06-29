@@ -384,6 +384,35 @@ class TestMultiTarget:
         assert len(list(tmp_path.glob("*.md"))) == 3
 
 
+class TestDiffCommand:
+    def _write(self, path: Path, result: ScanResult) -> None:
+        path.write_text(result.model_dump_json(), encoding="utf-8")
+
+    def test_diff_reports_changes(self, tmp_path: Path) -> None:
+        old = _completed_result()
+        new = _result_with_ports()  # adds an open port 80
+        self._write(tmp_path / "old.json", old)
+        self._write(tmp_path / "new.json", new)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["diff", str(tmp_path / "old.json"), str(tmp_path / "new.json")]
+        )
+        assert result.exit_code == 0, result.output
+        assert "80" in result.output
+
+    def test_diff_json_output(self, tmp_path: Path) -> None:
+        self._write(tmp_path / "old.json", _completed_result())
+        self._write(tmp_path / "new.json", _result_with_ports())
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["diff", str(tmp_path / "old.json"), str(tmp_path / "new.json"), "-f", "json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert any(p["port"] == 80 for p in data["added_ports"])
+
+
 class TestSarifAndFailOn:
     def test_format_sarif_writes_file(self, tmp_path: Path) -> None:
         runner = CliRunner()

@@ -208,3 +208,35 @@ class ScanResult(BaseModel):
         if not self.vulnerabilities:
             return None
         return max(self.vulnerabilities, key=lambda v: v.severity.score).severity
+
+
+class ScanDiff(BaseModel):
+    """What changed between two ScanResults of the same target."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    old_label: str
+    new_label: str
+    added_subdomains: list[Subdomain] = Field(default_factory=list)
+    removed_subdomains: list[Subdomain] = Field(default_factory=list)
+    added_ports: list[PortInfo] = Field(default_factory=list)
+    removed_ports: list[PortInfo] = Field(default_factory=list)
+    added_web: list[WebFinding] = Field(default_factory=list)
+    removed_web: list[WebFinding] = Field(default_factory=list)
+    added_vulns: list[Vulnerability] = Field(default_factory=list)
+    removed_vulns: list[Vulnerability] = Field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return any(
+            (
+                self.added_subdomains,
+                self.removed_subdomains,
+                self.added_ports,
+                self.removed_ports,
+                self.added_web,
+                self.removed_web,
+                self.added_vulns,
+                self.removed_vulns,
+            )
+        )
