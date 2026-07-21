@@ -82,6 +82,10 @@ class FfufScanner:
                 rc, _, stderr = await run_capture(self.binary, *args, timeout=self.timeout)
             except TimeoutError as exc:
                 raise FfufError(f"ffuf timed out after {self.timeout:.0f}s") from exc
+            except FileNotFoundError as exc:
+                raise FfufError(
+                    f"{self.binary} not found — install ffuf (e.g. sudo apt install ffuf)"
+                ) from exc
             if rc != 0:
                 err = stderr.decode(errors="replace").strip() or "unknown ffuf error"
                 raise FfufError(f"ffuf exited with code {rc}: {err}")

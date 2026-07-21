@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from reconfox.core._http import decode_body, fetch_capped
 from reconfox.core.resolver import DnsResolver, default_dns_resolver
 from reconfox.models import Subdomain
 
@@ -70,12 +71,14 @@ class SubdomainFinder:
     async def _crtsh(self, domain: str) -> set[str]:
         try:
             async with httpx.AsyncClient(timeout=self.timeout, proxy=self.proxy) as client:
-                response = await client.get(CRTSH_URL.format(domain=domain))
+                response, body = await fetch_capped(
+                    client, "GET", CRTSH_URL.format(domain=domain)
+                )
         except httpx.HTTPError:
             return set()  # passive source is best-effort
         if response.status_code != 200:
             return set()
-        return self._parse_crtsh(response.text, domain)
+        return self._parse_crtsh(decode_body(response, body), domain)
 
     @staticmethod
     def _parse_crtsh(text: str, domain: str) -> set[str]:

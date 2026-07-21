@@ -223,6 +223,20 @@ class TestFuzz:
         assert flat[flat.index("-t") + 1] == "10"
         assert flat[flat.index("-rate") + 1] == "50"
 
+    async def test_fuzz_missing_binary_is_clear_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An absent ffuf must surface a clear 'not found' FfufError, not a raw OSError."""
+        wl = tmp_path / "wl.txt"
+        wl.write_text("admin\n")
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
+            raise FileNotFoundError(2, "No such file or directory", "ffuf")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        with pytest.raises(FfufError, match="not found"):
+            await FfufScanner().fuzz("http://target", wl)
+
     async def test_fuzz_times_out(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -23,7 +23,12 @@ def _md(value: object, default: str = "—") -> str:
         return default
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = html.escape(text, quote=False)
-    return text.replace("|", "\\|").replace("`", "\\`")
+    # Defang table (|), code (`) and link/image ([]()!) metacharacters so scan
+    # data can't inject a Markdown link, tracking-pixel image or table break
+    # once the report is rendered/converted to HTML downstream.
+    for ch in ("|", "`", "[", "]", "(", ")", "!"):
+        text = text.replace(ch, "\\" + ch)
+    return text
 
 
 def render_markdown(result: ScanResult) -> str:

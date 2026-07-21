@@ -184,6 +184,23 @@ class TestResolveStage:
         with pytest.raises(ResolverError):
             await ResolveStage(FakeResolver(fail=True)).run(ctx)
 
+    async def test_run_enforces_out_of_scope(self) -> None:
+        """An out-of-scope resolved IP must abort in the (critical) resolve stage."""
+        from reconfox.core.scope import ScopeError, ScopePolicy
+
+        ctx = _ctx()  # FakeResolver resolves to 93.184.216.34
+        policy = ScopePolicy.from_cli(out_of_scope=["93.184.216.0/24"])
+        with pytest.raises(ScopeError):
+            await ResolveStage(FakeResolver(), scope=policy).run(ctx)
+
+    async def test_run_allows_in_scope(self) -> None:
+        from reconfox.core.scope import ScopePolicy
+
+        ctx = _ctx()
+        policy = ScopePolicy.from_cli(scope=["93.184.216.0/24"])
+        await ResolveStage(FakeResolver(), scope=policy).run(ctx)  # no raise
+        assert ctx.target.ip == "93.184.216.34"
+
 
 # --- NmapStage -----------------------------------------------------------
 
@@ -214,6 +231,26 @@ class TestNmapStage:
         ctx.target.ip = "1.1.1.1"
         with pytest.raises(NmapError):
             await NmapStage(FakeNmap(fail=True)).run(ctx)
+
+    async def test_run_stores_only_open_ports(self) -> None:
+        """closed/filtered ports must not land in result.ports — every consumer
+        treats result.ports as 'open' (summary count, report headings)."""
+
+        class MixedNmap:
+            async def scan(
+                self, target: str, mode: ScanMode, ports: str | None = None
+            ) -> list[PortInfo]:
+                return [
+                    PortInfo(port=80, protocol="tcp", state="open", service="http"),
+                    PortInfo(port=25, protocol="tcp", state="closed"),
+                    PortInfo(port=110, protocol="tcp", state="filtered"),
+                ]
+
+        ctx = _ctx()
+        ctx.target.ip = "1.1.1.1"
+        await NmapStage(MixedNmap()).run(ctx)
+        assert [p.port for p in ctx.result.ports] == [80]
+        assert all(p.state == "open" for p in ctx.result.ports)
 
 
 # --- FfufStage -----------------------------------------------------------

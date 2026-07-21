@@ -91,6 +91,10 @@ class NmapScanner:
             rc, stdout, stderr = await run_capture(self.binary, *args, timeout=timeout)
         except TimeoutError as exc:
             raise NmapError(f"nmap timed out after {timeout:.0f}s") from exc
+        except FileNotFoundError as exc:
+            raise NmapError(
+                f"{self.binary} not found — install nmap (e.g. sudo apt install nmap)"
+            ) from exc
         if rc != 0:
             err = stderr.decode(errors="replace").strip() or "unknown nmap error"
             raise NmapError(f"nmap exited with code {rc}: {err}")
@@ -109,7 +113,13 @@ class NmapScanner:
             if ports_el is None:
                 continue
             for port_el in ports_el.findall("port"):
-                results.append(_port_from_element(port_el))
+                # A single anomalous element (sctp/ip proto, state=unfiltered,
+                # portid=0, ...) must not discard every port on the host —
+                # pydantic ValidationError subclasses ValueError, so we skip it.
+                try:
+                    results.append(_port_from_element(port_el))
+                except ValueError:
+                    continue
         return results
 
 

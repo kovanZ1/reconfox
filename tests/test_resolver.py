@@ -148,9 +148,22 @@ class TestResolver:
         assert resolver._http is None
 
     async def test_proxy_is_stored_for_enrichment(self) -> None:
+        # No eager owned client: the enrichment client is created per-request and
+        # closed, so nothing leaks when the Resolver is used outside `async with`.
         resolver = Resolver(enrich=True, proxy="http://127.0.0.1:8080")
-        try:
-            assert resolver._proxy == "http://127.0.0.1:8080"
-            assert resolver._http is not None
-        finally:
-            await resolver._http.aclose()
+        assert resolver._proxy == "http://127.0.0.1:8080"
+        assert resolver._http is None
+
+    async def test_enrichment_without_injected_client_does_not_leak(self) -> None:
+        """Enrichment works with no injected client (the per-request client is
+        created and closed internally — the previous owned-client leak is gone)."""
+        target = Target.from_url("https://example.com")
+        with respx.mock:
+            respx.get("http://ip-api.com/json/93.184.216.34").mock(
+                return_value=httpx.Response(200, json=IP_API_SUCCESS)
+            )
+            resolver = Resolver(dns_resolver=_fake_dns_ok, enrich=True)
+            assert resolver._http is None  # nothing owned/eager
+            enriched = await resolver.resolve(target)
+        assert enriched.geo is not None  # per-request client did the fetch
+        assert enriched.asn is not None

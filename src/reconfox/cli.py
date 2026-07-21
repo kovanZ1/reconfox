@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import os
 import sys
 import tomllib
@@ -22,6 +23,7 @@ from reconfox.core.nmap_scanner import NmapScanner
 from reconfox.core.nuclei_scanner import NucleiScanner
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent, default_pipeline
 from reconfox.core.resolver import Resolver
+from reconfox.core.scope import ScopePolicy
 from reconfox.core.subdomain_finder import SubdomainFinder
 from reconfox.core.tls_prober import TlsProber
 from reconfox.models import ScanMode, ScanResult, ScanStatus, Severity
@@ -36,6 +38,31 @@ from reconfox.reporting import (
 
 DEFAULT_WORDLIST = Path("/usr/share/wordlists/dirb/common.txt")
 DEFAULT_OUTPUT = Path("./reports")
+
+# Tried in order when the chosen wordlist is missing (common Kali/seclists paths).
+_WORDLIST_FALLBACKS: tuple[Path, ...] = (
+    Path("/usr/share/seclists/Discovery/Web-Content/common.txt"),
+    Path("/usr/share/wordlists/seclists/Discovery/Web-Content/common.txt"),
+    Path("/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"),
+)
+
+
+def _resolve_wordlist(
+    wordlist: Path, out: Console, fallbacks: tuple[Path, ...] = _WORDLIST_FALLBACKS
+) -> Path:
+    """Preflight the ffuf wordlist: use it if present, else fall back to a known
+    seclists path, else warn up front (rather than failing mid-scan in ffuf)."""
+    if wordlist.exists():
+        return wordlist
+    for fb in fallbacks:
+        if fb.exists():
+            out.print(f"[yellow][!][/yellow] wordlist {wordlist} не найден — использую {fb}")
+            return fb
+    out.print(
+        f"[yellow][!][/yellow] wordlist {wordlist} не найден и запасного нет "
+        f"(sudo apt install seclists) — ffuf-фаза упадёт с ошибкой, остальные пойдут"
+    )
+    return wordlist
 console = Console()
 # When report data goes to stdout, all human/progress output must go to stderr
 # so stdout stays pipe-clean.
@@ -59,6 +86,8 @@ def build_orchestrator(
     nmap_max_rate: int | None = None,
     scan_delay: str | None = None,
     use_subdomains: bool = False,
+    scope_policy: ScopePolicy | None = None,
+    allow_private: bool = False,
 ) -> Orchestrator:
     """Wire real scanners together. Tests monkeypatch this with a fake factory."""
     finder: ExploitFinder | MetasploitFinder = (
@@ -77,10 +106,11 @@ def build_orchestrator(
         ),
         ffuf_scanner=FfufScanner(binary=ffuf_binary, timeout=timeout, threads=threads, rate=rate),
         exploit_finder=finder,
-        http_prober=HttpProber(proxy=proxy),
+        http_prober=HttpProber(proxy=proxy, allow_private=allow_private),
         nuclei_scanner=nuclei,
         subdomain_finder=subdomains,
         tls_prober=TlsProber(),
+        scope=scope_policy,
     )
     return Orchestrator(
         stages,
@@ -188,6 +218,56 @@ def diff(
         sys.exit(3)
 
 
+@main.command(name="doctor")
+@click.option(
+    "--wordlist",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_WORDLIST,
+    show_default=True,
+    help="Wordlist, наличие которого проверить.",
+)
+def doctor(wordlist: Path) -> None:
+    """Проверить окружение: внешние инструменты и wordlist.
+
+    Выводит, какие из nmap/ffuf/searchsploit/nuclei установлены (с версией) и
+    есть ли wordlist. Код выхода 1, если отсутствует обязательный инструмент
+    (nmap/ffuf) — чтобы можно было вставить в CI/preflight.
+    """
+    from reconfox.core.doctor import check_tools, check_wordlist, required_ok
+
+    console.print("[bold green]reconfox doctor[/bold green] — проверка окружения\n")
+    tools = check_tools()
+    for t in tools:
+        if t.ok:
+            ver = f" [grey50]({t.version})[/grey50]" if t.version else ""
+            console.print(f"  [green][+][/green] {t.name}: {t.path}{ver}")
+        else:
+            tag = "[red][-][/red]" if t.required else "[yellow][!][/yellow]"
+            kind = "обязателен" if t.required else "опционально"
+            console.print(f"  {tag} {t.name}: не найден ({kind}) — {t.hint}")
+
+    wl = check_wordlist(wordlist)
+    if wl.exists:
+        console.print(f"  [green][+][/green] wordlist: {wl.path}")
+    else:
+        console.print(f"  [yellow][!][/yellow] wordlist: {wl.path} не найден — {wl.hint}")
+
+    if not required_ok(tools):
+        console.print("\n[red][-] Отсутствуют обязательные инструменты (nmap/ffuf).[/red]")
+        sys.exit(1)
+    console.print("\n[green][+] Окружение готово к сканированию.[/green]")
+
+
+@main.command(name="schema")
+def schema() -> None:
+    """Вывести JSON Schema результата скана (ScanResult).
+
+    Контракт для потребителей JSON/NDJSON-вывода: по нему можно валидировать
+    и генерировать типы. NDJSON-поток дополнительно несёт schema_version.
+    """
+    click.echo(json.dumps(ScanResult.model_json_schema(), indent=2, ensure_ascii=False))
+
+
 @main.command()
 @click.argument("urls", nargs=-1)
 @click.option(
@@ -286,6 +366,24 @@ def diff(
     help="Проксировать исходящий HTTP (обогащение ip-api) через URL прокси.",
 )
 @click.option(
+    "--scope",
+    "scope_cidrs",
+    multiple=True,
+    help="In-scope диапазон CIDR/IP (можно несколько). Цель вне всех — отклоняется.",
+)
+@click.option(
+    "--out-of-scope",
+    "out_of_scope_cidrs",
+    multiple=True,
+    help="Out-of-scope диапазон CIDR/IP (можно несколько). Цель внутри — отклоняется.",
+)
+@click.option(
+    "--allow-private",
+    is_flag=True,
+    help="Разрешить сканирование приватных/внутренних IP (127.0.0.1, RFC1918 и т.п.) "
+    "и редиректы на них. По умолчанию такие цели отклоняются (защита от DNS-rebind).",
+)
+@click.option(
     "--timeout",
     "timeout",
     type=float,
@@ -333,6 +431,9 @@ def scan(
     nuclei_binary: str,
     enrich: bool,
     proxy: str | None,
+    scope_cidrs: tuple[str, ...],
+    out_of_scope_cidrs: tuple[str, ...],
+    allow_private: bool,
     timeout: float | None,
     ndjson: bool,
     fail_on: str | None,
@@ -356,6 +457,13 @@ def scan(
         out.print("[red][-][/red] не задано ни одной цели")
         sys.exit(2)
 
+    try:
+        scope_policy = ScopePolicy.from_cli(scope_cidrs, out_of_scope_cidrs, allow_private)
+    except ValueError as exc:
+        out.print(f"[red][-][/red] неверный CIDR в --scope/--out-of-scope: {exc}")
+        sys.exit(2)
+
+    wordlist = _resolve_wordlist(wordlist, out)
     scan_mode = ScanMode(mode.lower())
     progress_cb = _make_progress(verbose, out)
     orch = build_orchestrator(
@@ -375,6 +483,8 @@ def scan(
         nmap_max_rate=nmap_max_rate,
         scan_delay=scan_delay,
         use_subdomains=subdomains or scan_subdomains,
+        scope_policy=scope_policy,
+        allow_private=allow_private,
     )
 
     fail_threshold = Severity(fail_on.lower()) if fail_on else None

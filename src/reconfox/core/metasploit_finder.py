@@ -18,6 +18,16 @@ from reconfox.models import PortInfo, Severity, Vulnerability
 
 MIN_PRODUCT_LEN = 2
 
+# Passwords a security tool must refuse to connect with: unset, or the value
+# historically shipped in .env.example. Refusing to authenticate with a public
+# well-known default avoids nudging the operator toward an exposed msfrpcd.
+_INSECURE_MSF_PASSWORDS = frozenset({"", "changeme"})  # noqa: S105
+
+
+class MetasploitError(RuntimeError):
+    """Raised for a misconfigured Metasploit RPC connection (e.g. default password)."""
+
+
 try:
     from pymetasploit3.msfrpc import MsfRpcClient  # type: ignore[import-not-found]
 
@@ -61,7 +71,7 @@ class MetasploitFinder:
         self.host = host or os.environ.get("MSF_RPC_HOST", "127.0.0.1")
         self.port = port or int(os.environ.get("MSF_RPC_PORT", "55553"))
         self.username = username or os.environ.get("MSF_RPC_USER", "msf")
-        self.password = password or os.environ.get("MSF_RPC_PASS", "changeme")
+        self.password = password or os.environ.get("MSF_RPC_PASS", "")
         env_ssl = os.environ.get("MSF_RPC_SSL", "true").lower() in {"1", "true", "yes"}
         self.ssl = ssl if ssl is not None else env_ssl
         self._client: Any | None = None
@@ -69,6 +79,11 @@ class MetasploitFinder:
     def _client_available(self) -> bool:
         if not _msf_available:
             return False
+        if self.password in _INSECURE_MSF_PASSWORDS:
+            raise MetasploitError(
+                "MSF_RPC_PASS is unset or the shipped default 'changeme' — set a real "
+                "msfrpcd password (MSF_RPC_PASS=...) before using --metasploit"
+            )
         if self._client is not None:
             return True
         try:

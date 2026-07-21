@@ -201,6 +201,17 @@ class TestMarkdown:
         # a pipe must be escaped so it can't break out of a table cell
         assert "1\\|2" in out
 
+    def test_neutralizes_markdown_link_and_image_syntax(self) -> None:
+        """Scan data must not survive as live Markdown link/image syntax — that
+        renders as a clickable link / tracking pixel when the .md is later HTMLed."""
+        from reconfox.reporting.markdown import _md
+
+        link = _md("[click](javascript:alert(1))")
+        assert "](" not in link  # link syntax broken
+        image = _md("![](http://attacker.example/track.gif)")
+        assert not image.startswith("![")  # image syntax broken
+        assert "](" not in image
+
 
 # --- NDJSON --------------------------------------------------------------
 

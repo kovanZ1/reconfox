@@ -49,6 +49,33 @@ class TestComputeDiff:
         assert [p.port for p in diff.added_ports] == [443]
         assert [p.port for p in diff.removed_ports] == [22]
 
+    def test_same_number_different_protocol_not_collided(self) -> None:
+        """53/tcp closing while 53/udp opens must show as removed + added, not
+        cancel out (the diff keys ports on (port, protocol))."""
+        old = _result(ports=[PortInfo(port=53, protocol="tcp", state="open")])
+        new = _result(ports=[PortInfo(port=53, protocol="udp", state="open")])
+        diff = compute_diff(old, new)
+        assert [(p.port, p.protocol) for p in diff.added_ports] == [(53, "udp")]
+        assert [(p.port, p.protocol) for p in diff.removed_ports] == [(53, "tcp")]
+
+    def test_service_version_drift_is_surfaced(self) -> None:
+        """A version bump on the same port is real attack-surface drift and must
+        appear in the diff (removed old + added new)."""
+        old = _result(
+            ports=[
+                PortInfo(port=22, protocol="tcp", state="open", product="OpenSSH", version="8.2")
+            ]
+        )
+        new = _result(
+            ports=[
+                PortInfo(port=22, protocol="tcp", state="open", product="OpenSSH", version="9.6")
+            ]
+        )
+        diff = compute_diff(old, new)
+        assert [p.version for p in diff.added_ports] == ["9.6"]
+        assert [p.version for p in diff.removed_ports] == ["8.2"]
+        assert diff.has_changes is True
+
     def test_subdomains_diff(self) -> None:
         old = _result(subs=[Subdomain(name="a.example.com", source="crt.sh")])
         new = _result(

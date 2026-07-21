@@ -1,0 +1,194 @@
+.TH RECONFOX 1 "2026-07-21" "reconfox 0.2.1" "User Commands"
+.SH NAME
+reconfox \- reconnaissance toolkit for authorized security testing
+.SH SYNOPSIS
+.B reconfox
+[\fB--config\fR \fIPATH\fR]
+.br
+.B reconfox scan
+[\fIOPTIONS\fR] \fITARGET\fR...
+.br
+.B reconfox diff
+\fIOLD.json\fR \fINEW.json\fR
+.br
+.B reconfox doctor
+.br
+.B reconfox schema
+.SH DESCRIPTION
+.B reconfox
+automates the first phase of an authorized penetration test. Given one or more
+targets it enumerates subdomains, resolves the host, inspects TLS, scans ports
+with
+.BR nmap ,
+fingerprints HTTP, fuzzes web content with
+.BR ffuf ,
+runs
+.B nuclei
+templates and looks up known exploits, then writes a single report
+(HTML, Markdown, JSON, NDJSON or SARIF).
+.PP
+Stages run on a generic dependency-ordered engine: independent stages run
+concurrently and a failing non-critical stage is isolated rather than aborting
+the run. Running without a subcommand opens a Textual TUI.
+.PP
+.B reconfox is for legal use only:
+your own systems, engagements with written authorization, training ranges
+(DVWA, Metasploitable, HackTheBox, TryHackMe) and CTFs.
+.SH COMMANDS
+.TP
+.B scan \fITARGET\fR...
+Scan one or more targets. Targets may be URLs/hostnames, a file
+.RB ( -iL ),
+standard input
+.RB ( - ),
+or CIDR ranges (expanded to hosts, capped at 4096).
+.TP
+.B diff \fIOLD.json NEW.json\fR
+Compare two JSON reports and show what appeared/disappeared (subdomains, ports,
+web findings, vulnerabilities). With
+.B --fail-on-change
+exits 3 when anything changed \(em useful for cron monitoring.
+.TP
+.B doctor
+Report which external tools (nmap, ffuf, searchsploit, nuclei) are installed,
+with versions, and whether the wordlist exists. Exits 1 if a required tool
+(nmap/ffuf) is missing \(em suitable as a CI preflight.
+.TP
+.B schema
+Print the JSON Schema of a scan result (\fBScanResult\fR) so downstream
+automation can validate the JSON/NDJSON output.
+.SH SCAN OPTIONS
+.TP
+.BR \-m ", " \-\-mode " [quick|full|stealth]"
+nmap profile. quick = top-100 ports (\fB-T4 -F -sV\fR); full = all ports
+(\fB-T4 -p- -sV -sC\fR); stealth = SYN + fragmentation (\fB-T2 -sS -f -sV\fR).
+.TP
+.BR \-o ", " \-\-output " \fIDIR\fR"
+Directory for report files (default: \fB./reports\fR).
+.TP
+.BR \-O ", " \-\-output\-file " \fIPATH\fR"
+Exact output path; format from the extension. \fB-O -\fR writes to stdout.
+.TP
+.BR \-f ", " \-\-format " [md|html|json|sarif|all]"
+Report format(s).
+.TP
+.BR \-iL ", " \-\-target\-file " \fIPATH\fR"
+Read targets from a file, one per line.
+.TP
+.B \-\-subdomains
+Enumerate subdomains (crt.sh + DNS bruteforce). Opt-in (third party + DNS noise).
+.TP
+.B \-\-scan\-subdomains
+Enumerate subdomains and run the full pipeline against each discovered host.
+.TP
+.B \-\-nuclei
+Active template-based vulnerability scan. Intrusive \(em opt-in only.
+.TP
+.B \-\-metasploit
+Look up modules via msfrpcd instead of searchsploit (read-only). Requires
+.B MSF_RPC_PASS
+to be set to a non-default value.
+.TP
+.B \-\-enrich
+Enrich geo/ASN via ip-api.com. Off by default (OPSEC: leaks the target IP to a
+third party over plaintext). Use
+.B \-\-proxy
+to route that traffic.
+.TP
+.B \-\-scope " \fICIDR\fR"
+Allow-list; a target whose resolved IP is outside every range is refused. May be
+given multiple times.
+.TP
+.B \-\-out\-of\-scope " \fICIDR\fR"
+Deny-list; a target whose resolved IP falls inside any range is refused.
+.TP
+.B \-\-allow\-private
+Permit scanning private/internal IPs (127.0.0.1, RFC1918, link-local) and
+redirects to them. By default such targets are refused (DNS-rebind / SSRF guard).
+.TP
+.B \-\-ndjson
+Stream findings to stdout as NDJSON (one JSON object per line); human output
+goes to stderr, keeping stdout pipe-clean.
+.TP
+.B \-\-fail\-on " [info|low|medium|high|critical]"
+Exit 3 if any finding is at or above this severity (CI gate).
+.TP
+.BR \-\-threads ", " \-\-rate
+ffuf threads / requests-per-second cap.
+.TP
+.BR \-\-nmap\-min\-rate ", " \-\-nmap\-max\-rate ", " \-\-scan\-delay
+nmap speed tuning.
+.TP
+.B \-\-timeout " \fISECONDS\fR"
+Per-scanner timeout (default depends on mode). A hung tool is killed.
+.TP
+.B \-\-wordlist " \fIPATH\fR"
+ffuf wordlist (falls back to a seclists path if the default is missing).
+.TP
+.BR \-v ", " \-\-verbose
+Show every step.
+.TP
+.B \-\-no\-tui
+Headless mode (no TUI).
+.SH EXIT STATUS
+.TP
+.B 0
+Success (or partial success with warnings).
+.TP
+.B 1
+Every scanned target failed.
+.TP
+.B 2
+Argument error (bad target, bad CIDR, unknown output extension).
+.TP
+.B 3
+A
+.B \-\-fail\-on
+threshold was met, or
+.B diff \-\-fail\-on\-change
+detected a change.
+.SH FILES
+.TP
+.I ~/.config/reconfox/config.toml
+Default configuration ([scan]/[diff] tables). Precedence: CLI flag > env
+(\fBRECONFOX_*\fR) > config > built-in default.
+.TP
+.I /usr/share/wordlists/dirb/common.txt
+Default ffuf wordlist.
+.SH ENVIRONMENT
+.TP
+.B MSF_RPC_HOST, MSF_RPC_PORT, MSF_RPC_USER, MSF_RPC_PASS, MSF_RPC_SSL
+Metasploit RPC connection settings for
+.BR --metasploit .
+reconfox refuses to connect with an empty or the well-known default
+.RB ( changeme )
+password.
+.SH EXAMPLES
+.PP
+Quick scan, Markdown report:
+.PP
+.RS
+.B reconfox scan https://example.com --no-tui
+.RE
+.PP
+Full scan with subdomains and nuclei, all report formats:
+.PP
+.RS
+.B reconfox scan https://example.com -m full --scan-subdomains --nuclei -f all --no-tui
+.RE
+.PP
+Several targets, NDJSON into a pipe:
+.PP
+.RS
+.B reconfox scan a.com b.com 10.0.0.0/24 --ndjson --no-tui | jq .
+.RE
+.SH SEE ALSO
+.BR nmap (1),
+.BR ffuf (1),
+.BR nuclei (1),
+.BR searchsploit (1)
+.SH AUTHOR
+Fedor Zuev (kovanZ1). Source: https://github.com/kovanZ1/reconfox
+.SH SECURITY
+Unauthorized scanning of systems you do not own or have written permission to
+test may be illegal. You are responsible for how you use this tool.

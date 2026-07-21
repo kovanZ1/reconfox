@@ -177,9 +177,21 @@ class Orchestrator:
     def _derive_status(result: ScanResult) -> ScanStatus:
         if not result.errors:
             return ScanStatus.COMPLETED
-        if result.ports or result.web_findings:
-            return ScanStatus.PARTIAL
-        return ScanStatus.FAILED
+        # Errors occurred, but the run is only truly FAILED if *nothing* was
+        # collected. Any produced output (subdomains, TLS, ports, web, HTTP
+        # probes, vulns) makes it PARTIAL — otherwise a missing non-critical
+        # tool would mask a scan that actually delivered most of its output.
+        produced_output = any(
+            (
+                result.subdomains,
+                result.tls,
+                result.ports,
+                result.web_findings,
+                result.http_probes,
+                result.vulnerabilities,
+            )
+        )
+        return ScanStatus.PARTIAL if produced_output else ScanStatus.FAILED
 
 
 def _placeholder_target(raw: str) -> Target:

@@ -88,6 +88,13 @@ if [[ $UNINSTALL -eq 1 ]]; then
         rm -rf "${PREFIX}"
         log "Removed ${PREFIX}"
     fi
+    for m in "/usr/local/share/man/man1/reconfox.1" "${HOME}/.local/share/man/man1/reconfox.1"; do
+        if [[ -f "$m" ]]; then
+            rm -f "$m" 2>/dev/null || sudo rm -f "$m" 2>/dev/null || true
+            log "Removed man page $m"
+        fi
+    done
+    rm -f "${HOME}/.bash_completion.d/reconfox" 2>/dev/null || true
     log "Uninstalled."
     exit 0
 fi
@@ -130,28 +137,39 @@ else
     log "Required tools found: nmap, ffuf"
 fi
 
-if ! command -v searchsploit >/dev/null 2>&1; then
-    warn "searchsploit not found — exploit search disabled."
-    warn "Install with: sudo apt install exploitdb"
+for opt in "searchsploit:exploitdb:exploit search" "nuclei:nuclei:template vuln scan"; do
+    bin="${opt%%:*}"; rest="${opt#*:}"; pkg="${rest%%:*}"; what="${rest#*:}"
+    if ! command -v "$bin" >/dev/null 2>&1; then
+        warn "${bin} not found — ${what} disabled. Install: sudo apt install ${pkg}"
+    fi
+done
+
+DEFAULT_WORDLIST="/usr/share/wordlists/dirb/common.txt"
+if [[ ! -f "${DEFAULT_WORDLIST}" ]]; then
+    warn "Default wordlist ${DEFAULT_WORDLIST} not found (ffuf needs one)."
+    warn "Install with: sudo apt install seclists  (or dirb)"
 fi
 
 # --- install -------------------------------------------------------------
 info "Install prefix: ${PREFIX}"
 mkdir -p "$(dirname "${PREFIX}")"
 
-if [[ -d "${PREFIX}/.venv" ]]; then
-    warn "Existing venv at ${PREFIX}/.venv — recreating."
-    rm -rf "${PREFIX}/.venv"
+if [[ -d "${PREFIX}/.venv" ]] && "${PREFIX}/.venv/bin/python" -c "" >/dev/null 2>&1; then
+    info "Reusing existing venv at ${PREFIX}/.venv (upgrading in place)."
+else
+    if [[ -d "${PREFIX}/.venv" ]]; then
+        warn "Existing venv is broken — recreating."
+        rm -rf "${PREFIX}/.venv"
+    fi
+    info "Creating virtualenv..."
+    python3 -m venv "${PREFIX}/.venv"
 fi
-
-info "Creating virtualenv..."
-python3 -m venv "${PREFIX}/.venv"
 
 info "Upgrading pip..."
 "${PREFIX}/.venv/bin/pip" install --quiet --upgrade pip
 
 info "Installing reconfox from ${SCRIPT_DIR}..."
-"${PREFIX}/.venv/bin/pip" install --quiet "${SCRIPT_DIR}"
+"${PREFIX}/.venv/bin/pip" install --quiet --upgrade "${SCRIPT_DIR}"
 
 # Verify
 if ! "${PREFIX}/.venv/bin/reconfox" --version >/dev/null 2>&1; then
@@ -174,9 +192,45 @@ if [[ $DO_LINK -eq 1 ]]; then
     log "Symlinked: ${BIN_PATH} → ${SRC}"
 fi
 
+# --- man page ------------------------------------------------------------
+MAN_SRC="${SCRIPT_DIR}/man/reconfox.1"
+if [[ -f "${MAN_SRC}" ]]; then
+    if [[ $DO_LINK -eq 1 && "${LINK_DIR}" == "/usr/local/bin" ]]; then
+        MAN_DIR="/usr/local/share/man/man1"
+    else
+        MAN_DIR="${HOME}/.local/share/man/man1"
+    fi
+    if { mkdir -p "${MAN_DIR}" && cp "${MAN_SRC}" "${MAN_DIR}/reconfox.1"; } 2>/dev/null; then
+        log "Man page: ${MAN_DIR}/reconfox.1  (man reconfox)"
+    elif command -v sudo >/dev/null 2>&1 \
+         && sudo mkdir -p "${MAN_DIR}" 2>/dev/null \
+         && sudo cp "${MAN_SRC}" "${MAN_DIR}/reconfox.1" 2>/dev/null; then
+        log "Man page: ${MAN_DIR}/reconfox.1  (man reconfox)"
+    else
+        warn "Could not install man page to ${MAN_DIR} (skipped)."
+    fi
+fi
+
+# --- shell completion ----------------------------------------------------
+RECONFOX_BIN="${PREFIX}/.venv/bin/reconfox"
+COMP_DIR="${PREFIX}/completions"
+mkdir -p "${COMP_DIR}"
+if _RECONFOX_COMPLETE=bash_source "${RECONFOX_BIN}" > "${COMP_DIR}/reconfox.bash" 2>/dev/null \
+   && [[ -s "${COMP_DIR}/reconfox.bash" ]]; then
+    if mkdir -p "${HOME}/.bash_completion.d" 2>/dev/null; then
+        cp "${COMP_DIR}/reconfox.bash" "${HOME}/.bash_completion.d/reconfox" 2>/dev/null || true
+    fi
+    log "bash completion generated: source ${COMP_DIR}/reconfox.bash"
+fi
+if _RECONFOX_COMPLETE=zsh_source "${RECONFOX_BIN}" > "${COMP_DIR}/reconfox.zsh" 2>/dev/null \
+   && [[ -s "${COMP_DIR}/reconfox.zsh" ]]; then
+    log "zsh completion generated:  source ${COMP_DIR}/reconfox.zsh"
+fi
+
 # --- done ----------------------------------------------------------------
 printf "\n${GREEN}${BOLD}Installation complete.${RESET}\n\n"
 printf "Try:\n"
+printf "  ${CYAN}reconfox doctor${RESET}  ${GREY}# check nmap/ffuf/searchsploit/nuclei + wordlist${RESET}\n"
 printf "  ${CYAN}reconfox --help${RESET}\n"
 printf "  ${CYAN}reconfox scan https://example.com -o ./reports --no-tui${RESET}\n"
 printf "  ${CYAN}reconfox${RESET}  ${GREY}# TUI mode${RESET}\n\n"

@@ -100,6 +100,56 @@ class TestCliRoot:
         assert "0.2.1" in result.output
 
 
+class TestDoctorCommand:
+    def _patch_which(self, monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
+        from reconfox.core import doctor as doctor_mod
+
+        monkeypatch.setattr(
+            doctor_mod.shutil, "which", lambda b: f"/usr/bin/{b}" if b in present else None
+        )
+        monkeypatch.setattr(doctor_mod, "_probe_version", lambda b: f"{b} 1.0")  # noqa: ARG005
+
+    def test_all_present_exit_zero(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._patch_which(monkeypatch, {"nmap", "ffuf", "searchsploit", "nuclei"})
+        wl = tmp_path / "wl.txt"
+        wl.write_text("a\n")
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["doctor", "--wordlist", str(wl)])
+        assert result.exit_code == 0, result.output
+        assert "nmap" in result.output
+        assert "nuclei" in result.output
+
+    def test_missing_required_tool_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._patch_which(monkeypatch, {"ffuf"})  # nmap missing
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["doctor", "--wordlist", str(tmp_path / "none.txt")])
+        assert result.exit_code == 1
+        assert "nmap" in result.output
+
+    def test_missing_optional_tool_still_exit_zero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._patch_which(monkeypatch, {"nmap", "ffuf"})  # searchsploit/nuclei missing
+        wl = tmp_path / "wl.txt"
+        wl.write_text("a\n")
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["doctor", "--wordlist", str(wl)])
+        assert result.exit_code == 0, result.output
+
+
+class TestSchemaCommand:
+    def test_outputs_valid_json_schema(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["schema"])
+        assert result.exit_code == 0, result.output
+        doc = json.loads(result.stdout)
+        assert doc["title"] == "ScanResult"
+        assert "properties" in doc
+        assert "ports" in doc["properties"]
+
+
 class TestScanCommand:
     def test_basic_scan_writes_report(
         self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
@@ -382,6 +432,54 @@ class TestMultiTarget:
         assert _patch_orchestrator.expansion_calls[0][0] == "https://example.com"
         # primary + 2 discovered subdomains → 3 reports
         assert len(list(tmp_path.glob("*.md"))) == 3
+
+
+class TestWordlistPreflight:
+    def _quiet(self) -> Any:
+        from rich.console import Console
+
+        return Console(quiet=True)
+
+    def test_existing_wordlist_used(self, tmp_path: Path) -> None:
+        wl = tmp_path / "wl.txt"
+        wl.write_text("a\n")
+        assert cli._resolve_wordlist(wl, self._quiet()) == wl
+
+    def test_fallback_used_when_default_missing(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing.txt"
+        fb = tmp_path / "fallback.txt"
+        fb.write_text("a\n")
+        assert cli._resolve_wordlist(missing, self._quiet(), fallbacks=(fb,)) == fb
+
+    def test_returns_original_when_nothing_found(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing.txt"
+        # nothing exists → original path returned (ffuf then surfaces its own error)
+        assert cli._resolve_wordlist(missing, self._quiet(), fallbacks=()) == missing
+
+
+class TestScopeFlags:
+    def test_scope_and_allow_private_accepted(
+        self, tmp_path: Path, _patch_orchestrator: FakeOrchestrator
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            [
+                "scan", "https://example.com", "-o", str(tmp_path), "--no-tui",
+                "--out-of-scope", "10.0.0.0/8", "--allow-private",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_bad_cidr_exits_2(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main,
+            ["scan", "https://example.com", "-o", str(tmp_path), "--no-tui",
+             "--scope", "not-a-cidr"],
+        )
+        assert result.exit_code == 2
+        assert "cidr" in result.output.lower()
 
 
 class TestConfig:

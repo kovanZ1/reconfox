@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 from reconfox.core.scanner import Phase, ScanContext, Scanner
+from reconfox.core.scope import ScopePolicy
 from reconfox.models import (
     HttpProbe,
     PortInfo,
@@ -111,15 +112,21 @@ class SubdomainStage:
 
 
 class ResolveStage:
-    """Resolve IP and (optionally) enrich the target. Fatal if it fails."""
+    """Resolve IP and (optionally) enrich the target. Fatal if it fails.
+
+    When a ``ScopePolicy`` is supplied, the resolved IP is checked against it
+    right here — an out-of-scope target raises before any active stage runs
+    (this stage is ``critical``, so the whole pipeline aborts for that target).
+    """
 
     name = "resolve"
     phase: Phase = "resolve"
     depends_on: tuple[str, ...] = ()
     critical = True
 
-    def __init__(self, resolver: ResolverProtocol) -> None:
+    def __init__(self, resolver: ResolverProtocol, scope: ScopePolicy | None = None) -> None:
         self.resolver = resolver
+        self.scope = scope
 
     def applicable(self, ctx: ScanContext) -> bool:  # noqa: ARG002
         return True
@@ -128,6 +135,9 @@ class ResolveStage:
         ctx.emit("resolve", "started", f"resolving {ctx.target.hostname}")
         start = _now()
         await self.resolver.resolve(ctx.target)
+        if self.scope is not None and ctx.target.ip is not None:
+            # Raises ScopeError → critical abort → nmap/ffuf/nuclei never touch it.
+            self.scope.enforce(ctx.target.ip)
         t = ctx.target
         ctx.emit("resolve", "info", f"ip: {t.ip}")
         if t.asn is not None and t.asn.asn:
@@ -186,8 +196,10 @@ class NmapStage:
         ctx.emit("nmap", "started", f"scanning {ip} (mode={ctx.mode.value})")
         start = _now()
         ports = await self.scanner.scan(ip, ctx.mode)  # type: ignore[arg-type]
-        ctx.result.ports = ports
+        # Store only open ports: every downstream consumer (summary counts,
+        # report headings, exploit lookup) treats result.ports as "open".
         open_ports = [p for p in ports if p.state == "open"]
+        ctx.result.ports = open_ports
         for p in sorted(open_ports, key=lambda x: x.port):
             svc = p.service or "?"
             ver = f"{p.product or ''} {p.version or ''}".strip()
@@ -363,11 +375,12 @@ def default_pipeline(
     nuclei_scanner: NucleiProtocol | None = None,
     subdomain_finder: SubdomainFinderProtocol | None = None,
     tls_prober: TlsProberProtocol | None = None,
+    scope: ScopePolicy | None = None,
 ) -> list[Scanner]:
     """Standard pipeline: subdomains, resolve→tls, nmap‖ffuf, http, then nuclei‖exploits."""
     return [
         SubdomainStage(subdomain_finder),
-        ResolveStage(resolver),
+        ResolveStage(resolver, scope=scope),
         TlsStage(tls_prober),
         NmapStage(nmap_scanner),
         FfufStage(ffuf_scanner),

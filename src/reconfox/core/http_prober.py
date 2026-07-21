@@ -13,11 +13,18 @@ from collections.abc import Mapping
 
 import httpx
 
+from reconfox.core._http import MAX_RESPONSE_BYTES, decode_body, fetch_capped
+from reconfox.core.netguard import host_is_private
 from reconfox.models import HttpProbe
 
 DEFAULT_TIMEOUT = 10.0
+MAX_REDIRECTS = 10
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+class _RedirectBlocked(Exception):
+    """A redirect was refused by the SSRF guard (internal/private destination)."""
 
 # (header, lowercase-needle, technology) — best-effort, header/cookie based.
 _TECH_SIGNATURES: list[tuple[str, str, str]] = [
@@ -51,22 +58,30 @@ class HttpProber:
         timeout: float = DEFAULT_TIMEOUT,
         verify: bool = False,
         proxy: str | None = None,
+        allow_private: bool = False,
+        max_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
         # verify=False by default: recon targets routinely have self-signed certs,
         # and we still want to fingerprint them. See roadmap: make this explicit.
         self.timeout = timeout
         self.verify = verify
         self.proxy = proxy
+        # allow_private=True lets redirects reach internal hosts (lab scanning);
+        # by default a target cannot steer the prober at 169.254.169.254 etc.
+        self.allow_private = allow_private
+        self.max_bytes = max_bytes
 
     async def probe(self, url: str) -> HttpProbe:
         try:
             async with httpx.AsyncClient(
-                follow_redirects=True,
+                follow_redirects=False,
                 timeout=self.timeout,
                 verify=self.verify,
                 proxy=self.proxy,
             ) as client:
-                response = await client.get(url)
+                response, body = await self._fetch(client, url)
+        except _RedirectBlocked as exc:
+            return HttpProbe(url=url, error=str(exc))
         except httpx.HTTPError as exc:
             return HttpProbe(url=url, error=str(exc) or exc.__class__.__name__)
 
@@ -74,11 +89,38 @@ class HttpProber:
             url=url,
             status=response.status_code,
             final_url=str(response.url),
-            title=self._extract_title(response.text),
+            title=self._extract_title(decode_body(response, body)),
             server=response.headers.get("server"),
             technologies=self._detect_tech(response.headers),
-            content_length=_content_length(response),
+            content_length=_content_length(response, body),
         )
+
+    async def _fetch(
+        self, client: httpx.AsyncClient, url: str
+    ) -> tuple[httpx.Response, bytes]:
+        """Follow redirects manually, guarding each hop against internal hosts.
+
+        The initial URL is the operator's explicit choice and is always fetched;
+        redirects that leave for a *different* private/internal host are refused
+        (SSRF). With a proxy set, DNS happens at the proxy, so the guard — which
+        resolves locally — is skipped.
+        """
+        initial_host = httpx.URL(url).host
+        current = url
+        for _ in range(MAX_REDIRECTS + 1):
+            response, body = await fetch_capped(client, "GET", current, self.max_bytes)
+            location = response.headers.get("location")
+            if not response.is_redirect or not location:
+                return response, body
+            next_url = httpx.URL(response.url).join(location)
+            if not self.allow_private and self.proxy is None:
+                host = next_url.host
+                if host != initial_host and await host_is_private(host):
+                    raise _RedirectBlocked(
+                        f"blocked redirect to internal host {host} (SSRF guard)"
+                    )
+            current = str(next_url)
+        raise _RedirectBlocked(f"too many redirects (>{MAX_REDIRECTS})")
 
     @staticmethod
     def _extract_title(body: str) -> str | None:
@@ -106,11 +148,11 @@ def _header_values(headers: Mapping[str, str], name: str) -> str:
     return headers.get(name, "")
 
 
-def _content_length(response: httpx.Response) -> int | None:
+def _content_length(response: httpx.Response, body: bytes) -> int | None:
     raw = response.headers.get("content-length")
     if raw is not None:
         try:
             return int(raw)
         except ValueError:
             pass
-    return len(response.content)
+    return len(body)

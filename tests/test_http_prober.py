@@ -73,3 +73,42 @@ class TestProbe:
             probe = await HttpProber().probe("http://down.test/")
         assert probe.status is None
         assert probe.error
+
+    async def test_probe_blocks_redirect_to_internal_metadata_host(self) -> None:
+        """A target that 302s to the cloud-metadata / internal host must NOT be
+        followed there (SSRF guard), and the internal endpoint is never fetched."""
+        with respx.mock:
+            respx.get("http://t.test/").mock(
+                return_value=httpx.Response(
+                    302, headers={"Location": "http://169.254.169.254/latest/meta-data/"}
+                )
+            )
+            meta = respx.get("http://169.254.169.254/latest/meta-data/").mock(
+                return_value=httpx.Response(200, text="AWS_SECRET_KEY")
+            )
+            probe = await HttpProber().probe("http://t.test/")
+        assert meta.call_count == 0  # internal endpoint never fetched
+        assert probe.error is not None
+        assert "169.254.169.254" in probe.error
+
+    async def test_probe_allows_redirect_to_internal_when_opted_in(self) -> None:
+        """allow_private=True (lab scanning) must let internal redirects through."""
+        with respx.mock:
+            respx.get("http://t.test/").mock(
+                return_value=httpx.Response(302, headers={"Location": "http://127.0.0.1/app"})
+            )
+            respx.get("http://127.0.0.1/app").mock(
+                return_value=httpx.Response(200, html="<title>Lab</title>")
+            )
+            probe = await HttpProber(allow_private=True).probe("http://t.test/")
+        assert probe.status == 200
+        assert probe.title == "Lab"
+
+    async def test_probe_caps_oversized_body(self) -> None:
+        """A hostile target streaming a huge body must be truncated, not loaded whole."""
+        body = "x" * 100 + "<title>LATE</title>"  # title lives past the cap
+        with respx.mock:
+            respx.get("http://t.test/").mock(return_value=httpx.Response(200, html=body))
+            probe = await HttpProber(max_bytes=16).probe("http://t.test/")
+        assert probe.status == 200
+        assert probe.title is None  # body truncated before the title tag

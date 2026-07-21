@@ -30,7 +30,12 @@ def _label(result: ScanResult) -> str:
 
 def compute_diff(old: ScanResult, new: ScanResult) -> ScanDiff:
     added_sub, removed_sub = _diff(old.subdomains, new.subdomains, lambda s: s.name)
-    added_port, removed_port = _diff(old.ports, new.ports, lambda p: p.port)
+    # Key ports on (number, protocol, product, version) so a tcp/udp swap on the
+    # same number, and a service/version bump on the same port, both surface as
+    # attack-surface drift (removed old + added new) instead of cancelling out.
+    added_port, removed_port = _diff(
+        old.ports, new.ports, lambda p: (p.port, p.protocol, p.product, p.version)
+    )
     added_web, removed_web = _diff(old.web_findings, new.web_findings, lambda f: f.url)
     added_vuln, removed_vuln = _diff(
         old.vulnerabilities,

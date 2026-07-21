@@ -166,6 +166,31 @@ class TestOrchestrator:
         assert any("Invalid URL" in e for e in result.errors)
 
 
+class TestStatusDerivation:
+    """A scan that produced *any* output must not be reported as FAILED just
+    because ports/web happened to be empty (e.g. nmap absent but subdomains found)."""
+
+    async def test_partial_when_only_subdomains_despite_scan_errors(self) -> None:
+        stages = default_pipeline(
+            FakeResolver(),
+            FakeNmap(error=True),
+            FakeFfuf(error=True),
+            subdomain_finder=_FakeSubFinder(),
+        )
+        orch = Orchestrator(stages, WL)
+        result = await orch.run("http://example.com", ScanMode.QUICK)
+        assert result.subdomains  # subdomains were collected
+        assert result.ports == []
+        assert result.web_findings == []
+        assert result.errors  # nmap + ffuf failed
+        assert result.status == ScanStatus.PARTIAL  # not FAILED — output was produced
+
+    async def test_failed_only_when_no_output_at_all(self) -> None:
+        orch, _, _, _ = TestOrchestrator()._make(nmap_fail=True, ffuf_fail=True)
+        result = await orch.run("https://example.com", ScanMode.QUICK)
+        assert result.status == ScanStatus.FAILED  # nothing collected + errors
+
+
 @pytest.mark.parametrize("mode", [ScanMode.QUICK, ScanMode.FULL, ScanMode.STEALTH])
 async def test_all_modes_supported(mode: ScanMode) -> None:
     orch = Orchestrator(default_pipeline(FakeResolver(), FakeNmap(), FakeFfuf()), WL)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import re
 import socket
 from collections.abc import Awaitable, Callable
@@ -16,6 +17,7 @@ from typing import Any, Self
 
 import httpx
 
+from reconfox.core._http import decode_body, fetch_capped
 from reconfox.models import ASNInfo, Geolocation, Target
 
 DnsResolver = Callable[[str], Awaitable[str]]
@@ -65,16 +67,11 @@ class Resolver:
         self.enrich = enrich
         self._proxy = proxy
         self._dns_resolver = dns_resolver
-        if http_client is not None:
-            self._http: httpx.AsyncClient | None = http_client
-            self._owns_http = False
-        elif enrich:
-            self._http = httpx.AsyncClient(timeout=IP_API_TIMEOUT, proxy=proxy)
-            self._owns_http = True
-        else:
-            # No enrichment → no HTTP client at all, so no accidental traffic.
-            self._http = None
-            self._owns_http = False
+        # An injected client is caller-owned and reused; otherwise the enrichment
+        # client is created per request and closed there, so nothing leaks when a
+        # Resolver is used outside `async with` (as build_orchestrator does).
+        self._http: httpx.AsyncClient | None = http_client
+        self._owns_http = False
 
     async def __aenter__(self) -> Self:
         return self
@@ -90,7 +87,7 @@ class Resolver:
 
     async def resolve(self, target: Target) -> Target:
         target.ip = await self._resolve_ip(target.hostname)
-        if self.enrich and self._http is not None and target.ip is not None:
+        if self.enrich and target.ip is not None:
             geo, asn = await self._fetch_ip_meta(target.ip)
             target.geo = geo
             target.asn = asn
@@ -104,19 +101,27 @@ class Resolver:
         return hostname
 
     async def _fetch_ip_meta(self, ip: str) -> tuple[Geolocation | None, ASNInfo | None]:
+        client = self._http
+        owns = client is None
+        if client is None:
+            client = httpx.AsyncClient(timeout=IP_API_TIMEOUT, proxy=self._proxy)
         try:
-            response = await self._http.get(IP_API_URL.format(ip=ip))
-        except httpx.HTTPError:
-            return None, None
-        if response.status_code != 200:
-            return None, None
-        try:
-            data: dict[str, Any] = response.json()
-        except ValueError:
-            return None, None
-        if data.get("status") != "success":
-            return None, None
-        return self._parse_geo(data), self._parse_asn(data)
+            try:
+                response, body = await fetch_capped(client, "GET", IP_API_URL.format(ip=ip))
+            except httpx.HTTPError:
+                return None, None
+            if response.status_code != 200:
+                return None, None
+            try:
+                data: dict[str, Any] = json.loads(decode_body(response, body))
+            except ValueError:
+                return None, None
+            if data.get("status") != "success":
+                return None, None
+            return self._parse_geo(data), self._parse_asn(data)
+        finally:
+            if owns:
+                await client.aclose()
 
     @staticmethod
     def _parse_geo(data: dict[str, Any]) -> Geolocation:

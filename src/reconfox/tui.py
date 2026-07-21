@@ -31,6 +31,7 @@ from textual.widgets import (
     Static,
 )
 
+from reconfox import __version__
 from reconfox.core.orchestrator import Orchestrator, ProgressEvent
 from reconfox.models import PortInfo, ScanMode, ScanResult, ScanStatus
 from reconfox.reporting import (
@@ -179,7 +180,9 @@ class ReconFoxApp(App[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="banner-row"):
             yield Static(_load_banner(), id="banner")
-            yield Static("v0.2 // recon toolkit  ·  authorized testing only", id="tagline")
+            yield Static(
+                f"v{__version__} // recon toolkit  ·  authorized testing only", id="tagline"
+            )
 
         with Horizontal(id="target-row", classes="row"):
             yield Label("> target")

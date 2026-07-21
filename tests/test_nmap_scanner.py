@@ -69,6 +69,17 @@ class TestParseXml:
         with pytest.raises(NmapError, match="parse"):
             NmapScanner.parse_xml("<<not xml>>")
 
+    def test_skips_out_of_enum_port_but_keeps_valid_ones(self) -> None:
+        """One anomalous port element (sctp/unfiltered/portid=0) must not drop the
+        whole list — a single bad element is skipped, valid ports survive."""
+        xml = """<?xml version="1.0"?><nmaprun><host><ports>
+          <port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>
+          <port protocol="sctp" portid="9"><state state="open"/></port>
+          <port protocol="tcp" portid="22"><state state="unfiltered"/></port>
+        </ports></host></nmaprun>"""
+        ports = NmapScanner.parse_xml(xml)
+        assert [p.port for p in ports] == [80]
+
 
 class TestBuildArgs:
     def test_quick_mode_args(self) -> None:
@@ -172,6 +183,18 @@ class TestScanIntegration:
         await NmapScanner(min_rate=300).scan("1.1.1.1", ScanMode.QUICK)
         assert "--min-rate" in captured[0]
         assert "300" in captured[0]
+
+    async def test_scan_missing_binary_is_clear_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent nmap must surface a clear 'not found' NmapError, not a raw OSError."""
+
+        async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProcess:  # noqa: ARG001
+            raise FileNotFoundError(2, "No such file or directory", "nmap")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        with pytest.raises(NmapError, match="not found"):
+            await NmapScanner().scan("1.1.1.1", ScanMode.QUICK)
 
     async def test_scan_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hung nmap must be killed and surfaced as NmapError, not block forever."""

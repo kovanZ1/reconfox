@@ -7,8 +7,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from reconfox.core.metasploit_finder import MetasploitFinder
+from reconfox.core.metasploit_finder import MetasploitError, MetasploitFinder
 from reconfox.models import PortInfo, Severity
+
+
+@pytest.fixture(autouse=True)
+def _msf_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a real RPC password so the weak-default guard (which
+    refuses the shipped 'changeme'/empty) doesn't trip — these tests exercise
+    the search logic, not credential handling."""
+    monkeypatch.setenv("MSF_RPC_PASS", "test-secret")
 
 
 class FakeModules:
@@ -185,6 +193,33 @@ class TestFindForPorts:
             ]
         )
         assert connect_calls == 1
+
+
+class TestWeakDefaultPassword:
+    async def test_refuses_shipped_default_password(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recon tool must not silently connect with the well-known default
+        'changeme' password — it refuses with a clear, actionable error."""
+        from reconfox.core import metasploit_finder
+
+        monkeypatch.setattr(metasploit_finder, "_msf_available", True)
+        finder = MetasploitFinder(password="changeme")  # noqa: S106 — testing the guard
+        with pytest.raises(MetasploitError, match="changeme|password"):
+            await finder.find_for_ports(
+                [PortInfo(port=445, protocol="tcp", state="open", product="SMB")]
+            )
+
+    async def test_refuses_empty_password(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from reconfox.core import metasploit_finder
+
+        monkeypatch.setattr(metasploit_finder, "_msf_available", True)
+        monkeypatch.delenv("MSF_RPC_PASS", raising=False)
+        finder = MetasploitFinder()  # no password anywhere
+        with pytest.raises(MetasploitError, match="password"):
+            await finder.find_for_ports(
+                [PortInfo(port=445, protocol="tcp", state="open", product="SMB")]
+            )
 
 
 def test_msfrpc_module_optional(monkeypatch: pytest.MonkeyPatch) -> None:
